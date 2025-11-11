@@ -1,146 +1,204 @@
-# GL-template
-**Gormley Lab Python Project Template**
+# Academic RAG Pipeline for Research & Citation Management
 
-A beginner-friendly Python project template that follows best practices and provides a solid foundation for new projects in the Gormley Lab.
+A locally-hosted, privacy-focused RAG (Retrieval Augmented Generation) system designed to transform how researchers interact with their paper libraries during grant writing and academic writing. By combining advanced document processing (Docling), vector search (LanceDB), and AI assistance (Claude via MCP), this tool enables intelligent citation management, contextual paper retrieval, and automated bibliography generation for LaTeX documents.
 
-## 🚀 Quick Start
+## Features
 
-1. **Use this template** to create a new repository
-2. **Rename the package**: Change `src/package_name/` to `src/your_project_name/`
-3. **Update metadata**: Edit `src/your_project_name/__about__.py` with your project details
-4. **Install dependencies**: `pip install -r requirements.txt`
-5. **Run the example**: `python main.py`
+- **Intelligent Paper Search**: Semantic search through your PDF library using natural language queries
+- **Automated Citation Management**: Extract DOI metadata and generate BibTeX entries automatically
+- **Claude Desktop Integration**: Natural language interface via Model Context Protocol (MCP)
+- **Local & Private**: All processing happens locally, only embeddings API calls to OpenAI
+- **LaTeX Ready**: Generate publication-ready `.bib` files for your manuscripts
+- **URL Linking**: Maintain links to online versions (DOI, arXiv, PubMed) for easy access
 
-## 📁 Project Structure
+## Quick Start
 
-This template follows the **src layout**, a Python best practice that keeps your source code organized and separate from tests, documentation, and configuration files.
+### Prerequisites
+
+- Python 3.10+
+- Claude Desktop app
+- OpenAI API key (for embeddings)
+- Local library of research papers (PDFs)
+
+### Installation
+
+1. **Clone the repository**
+   ```bash
+   git clone <repository-url>
+   cd academic-rag-pipeline
+   ```
+
+2. **Install dependencies**
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+3. **Configure environment variables**
+   ```bash
+   cp .env.example .env
+   # Edit .env and add your OpenAI API key
+   ```
+
+4. **Update configuration**
+   ```bash
+   # Edit config/config.yaml with your PDF library path
+   ```
+
+5. **Initialize the database**
+   ```bash
+   python scripts/initial_setup.py
+   ```
+
+6. **Configure Claude Desktop**
+   - Add the MCP server configuration to Claude Desktop
+   - Location (macOS): `~/Library/Application Support/Claude/claude_desktop_config.json`
+   - See [docs/setup.md](docs/setup.md) for detailed instructions
+
+## Project Structure
 
 ```
-GL-template/
-├── main.py                          # 🎯 Entry point - run this file to start your program
-├── requirements.txt                 # 📦 List of Python packages your project needs
-├── README.md                       # 📖 Project documentation (this file)
-├── LICENSE                         # ⚖️ Legal terms for using your code
-├── attachment/                     # 📎 Store additional files and resources
-├── data/                           # 📊 Store datasets, CSV files, and raw data
-├── docs/                           # 📚 Documentation files and project notes
-├── imgs/                           # 🖼️ Images, plots, and visual outputs
-├── jsons/                          # 📋 JSON configuration and data files
-├── models/                         # 🤖 Machine learning models and saved weights
-├── notebook/                       # 📓 Jupyter notebooks for analysis and experimentation
-└── src/                            # 📂 Source code directory
-    └── package_name/               # 🐍 Your Python package (rename this!)
-        ├── __init__.py             # 🔧 Makes this directory a Python package
-        ├── __about__.py            # ℹ️ Package metadata (version, author, etc.)
-        ├── class_example.py        # 🏗️ Example class demonstrating OOP concepts
-        └── utils_example.py        # 🛠️ Utility functions for common tasks
+academic-rag-pipeline/
+├── src/                            # Source code
+│   ├── mcp_server.py              # MCP server implementation
+│   ├── document_processor.py      # Docling PDF processing pipeline
+│   ├── metadata_extractor.py      # Citation metadata extraction
+│   ├── vector_store.py            # LanceDB operations
+│   ├── embeddings.py              # OpenAI embedding generation
+│   ├── bibliography.py            # BibTeX management
+│   └── utils.py                   # Helper functions
+├── config/                        # Configuration files
+│   ├── config.yaml                # Main configuration
+│   └── claude_desktop_config.json # MCP server config (example)
+├── data/                          # Data directory
+│   ├── lancedb/                   # Vector database
+│   ├── pdfs/                      # PDF library
+│   └── logs/                      # Application logs
+├── scripts/                       # Utility scripts
+│   ├── initial_setup.py           # Initialize database
+│   └── maintenance.py             # Database maintenance
+├── tests/                         # Test suite
+├── docs/                          # Documentation
+├── .env.example                   # Environment variables template
+├── requirements.txt               # Python dependencies
+├── PRD.md                         # Product Requirements Document
+└── README.md                      # This file
 ```
 
-## 📚 Understanding the Components
+## Usage
 
-### Entry Point (`main.py`)
-- **Purpose**: The file you run to start your program
-- **What it does**: Imports your package and demonstrates its usage
-- **Key concept**: Uses `if __name__ == "__main__"` to ensure code only runs when executed directly
+### via Claude Desktop
 
-### Package Directory (`src/package_name/`)
-- **Rename this** to match your project (use lowercase with underscores: `my_awesome_project`)
-- Contains all your project's source code
-- The `__init__.py` file makes it importable as a package
+Once configured, interact with your paper library through Claude Desktop:
 
-### Core Files Explained
-
-| File | Purpose | When to modify |
-|------|---------|----------------|
-| `__init__.py` | Controls what gets imported from your package | When adding new classes/functions |
-| `__about__.py` | Stores project metadata (version, author, description) | At project start and version updates |
-| `class_example.py` | Template for object-oriented code | Replace with your own classes |
-| `utils_example.py` | Template for utility functions | Add general-purpose functions here |
-
-## 🎯 Getting Started Guide
-
-### Step 1: Customize Your Package
-```bash
-# Rename the package directory
-mv src/package_name src/my_project_name
-
-# Update imports in main.py to match your new package name
-# Change: from package_name import ...
-# To:     from my_project_name import ...
+**Search for papers:**
+```
+Find papers about machine learning in drug delivery from the last 3 years
 ```
 
-### Step 2: Update Package Metadata
-Edit `src/my_project_name/__about__.py`:
-```python
-__title__ = "My Awesome Project"
-__description__ = "What your project does"
-__version__ = "1.0.0"
-__author__ = "Your Name"
-__author_email__ = "your.email@example.com"
+**Add a paper:**
+```
+[Drag PDF into chat]
+Add this paper to my database
 ```
 
-### Step 3: Add Your Code
-- **Classes**: Add new `.py` files for your classes in the package directory
-- **Functions**: Use `utils_example.py` or create new utility files
-- **Imports**: Update `__init__.py` to export your new classes and functions
-
-### Step 4: Manage Dependencies
-Add any Python packages you need to `requirements.txt`:
+**Generate bibliography:**
 ```
-numpy
-pandas
-matplotlib
+Generate a .bib file with Smith2024, Jones2023, Chen2022
 ```
 
-## 🏗️ Development Best Practices
-
-### Object-Oriented Programming (OOP)
-- **Use classes** for complex data structures and behaviors
-- **Follow naming conventions**: `ClassName` (PascalCase) for classes, `function_name` (snake_case) for functions
-- **Document your code** with docstrings
-
-### Project Organization
-- **Keep related code together** in the same file or subdirectory
-- **Use descriptive names** for files, classes, and functions
-- **Separate concerns**: classes for objects, utils for general functions
-
-### Version Control
-- **Commit early and often** with descriptive messages
-- **Use .gitignore** to exclude temporary files
-- **Tag releases** when you reach milestones
-
-## 🔧 Common Tasks
-
-### Adding a New Class
-1. Create a new `.py` file in your package directory
-2. Define your class with proper docstrings
-3. Import it in `__init__.py`
-4. Add it to the `__all__` list
-
-### Adding Dependencies
-1. Add the package name to `requirements.txt`
-2. Install with `pip install -r requirements.txt`
-3. Import and use in your code
-
-### Testing Your Code
-```bash
-# Run your program
-python main.py
-
-# Check for syntax errors
-python -m py_compile src/your_package_name/*.py
+**Get paper details:**
+```
+Show me information about the Wang2024 paper
 ```
 
-## 📖 Learning Resources
+### Available MCP Tools
 
-- **Python Classes**: [Official Python Tutorial on Classes](https://docs.python.org/3/tutorial/classes.html)
-- **Package Structure**: [Python Packaging Guide](https://packaging.python.org/)
-- **Best Practices**: [The Hitchhiker's Guide to Python](https://docs.python-guide.org/)
+- `search_papers` - Search the paper database
+- `add_paper_from_file` - Add PDF via file path
+- `add_paper_from_url` - Add paper via DOI/arXiv/URL
+- `generate_bibliography` - Create .bib file
+- `get_paper_details` - Retrieve paper metadata
+- `verify_citation` - Review citation accuracy
+- `update_bibtex` - Manually update metadata
+- `import_bibtex_file` - Import existing .bib file
+- `database_stats` - Get database statistics
+- `list_recent_papers` - Show recently added papers
 
-## 🤝 Contributing
+## Technology Stack
 
-This template is designed for the Gormley Lab. Feel free to suggest improvements or report issues to help other lab members get started with Python development.
+| Component | Technology | Purpose |
+|-----------|-----------|---------|
+| Document Processing | Docling | Advanced PDF parsing with structure preservation |
+| Vector Database | LanceDB | High-performance local vector storage |
+| Embeddings | OpenAI text-embedding-3-large | Semantic search (3072 dimensions) |
+| Chunking | Docling Hybrid Chunker | Semantic document chunking |
+| AI Interface | Claude Desktop + MCP | Natural language interaction |
+| Citation Metadata | CrossRef API | Authoritative bibliographic data |
+| Bibliography Format | BibTeX | LaTeX-compatible citations |
+
+## Development Roadmap
+
+### Phase 1: MVP (v1.0) - Current
+- Core PDF processing pipeline
+- Metadata extraction (DOI, CrossRef)
+- Vector search with LanceDB
+- Basic MCP tools
+- Claude Desktop integration
+
+### Phase 2: Enhanced Features (v1.5)
+- URL-based paper addition
+- Citation verification tools
+- Manual metadata overrides
+- BibTeX file import
+
+### Phase 3: Citation Graph (v2.0)
+- Reference extraction
+- Citation network analysis
+- Foundational paper discovery
+- Co-citation analysis
+
+### Phase 4: Advanced Retrieval (v2.5)
+- Section-aware retrieval
+- Figure/table extraction
+- Claim verification
+
+## Documentation
+
+- [Setup Guide](docs/setup.md) - Detailed installation instructions
+- [Usage Guide](docs/usage.md) - Comprehensive usage examples
+- [Troubleshooting](docs/troubleshooting.md) - Common issues and solutions
+- [PRD](PRD.md) - Complete product requirements
+
+## Privacy & Security
+
+- All PDFs stored locally (no cloud upload)
+- Vector database stored locally
+- Only API calls: OpenAI embeddings, CrossRef metadata
+- No paper content sent to external services
+- API keys stored securely in environment variables
+
+## Cost Estimates
+
+**Operational Costs (per month):**
+- Initial library (1000 papers): ~$15 one-time
+- Ongoing queries: ~$5-10/month typical usage
+- Adding papers: ~$0.01-0.02 per paper
+- Total first year: ~$175-250 (API usage only)
+
+## Contributing
+
+This project is designed for academic researchers. Contributions, bug reports, and feature requests are welcome.
+
+## License
+
+[Add license information]
+
+## Acknowledgments
+
+Built for the Gormley Lab at Rutgers University for streamlining grant writing and literature management.
 
 ---
 
-**Happy coding!** 🐍✨
+**Version:** 1.0
+**Status:** In Development
+**Author:** Adam (Associate Professor, Biomedical Engineering, Rutgers University)
