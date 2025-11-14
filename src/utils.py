@@ -75,6 +75,11 @@ def extract_doi_from_text(text: str) -> Optional[str]:
     """
     Extract DOI from text using regex patterns.
 
+    NOTE: This is a fallback method. The primary DOI extraction is handled by
+    pdf2bib in metadata_extractor.py, which extracts identifiers directly from
+    PDF binary content and is more reliable. This text-based extraction is used
+    only when pdf2bib is not available or fails.
+
     Args:
         text: Text to search for DOI
 
@@ -105,6 +110,10 @@ def extract_arxiv_id_from_text(text: str) -> Optional[str]:
     """
     Extract arXiv ID from text.
 
+    NOTE: This is a fallback method. The primary arXiv ID extraction is handled by
+    pdf2bib in metadata_extractor.py. This text-based extraction is used only when
+    pdf2bib is not available or fails.
+
     Args:
         text: Text to search for arXiv ID
 
@@ -128,6 +137,10 @@ def extract_arxiv_id_from_text(text: str) -> Optional[str]:
 def extract_pubmed_id_from_text(text: str) -> Optional[str]:
     """
     Extract PubMed ID from text.
+
+    NOTE: This is a fallback method. The primary PMID extraction is handled by
+    pdf2bib in metadata_extractor.py. This text-based extraction is used only when
+    pdf2bib is not available or fails.
 
     Args:
         text: Text to search for PMID

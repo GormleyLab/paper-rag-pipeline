@@ -40,7 +40,7 @@ python src/mcp_server.py
 ### Data Flow Pipeline
 
 1. **PDF Ingestion** → `DocumentProcessor` (Docling) → Markdown + Chunks
-2. **Metadata Extraction** → `MetadataExtractor` → DOI → CrossRef API → BibTeX
+2. **Metadata Extraction** → `MetadataExtractor` → pdf2bib/DOI → CrossRef API → BibTeX
 3. **Embedding Generation** → `EmbeddingGenerator` (OpenAI) → 3072-dim vectors (batched)
 4. **Storage** → `VectorStore` (LanceDB) → Persistent local DB
 5. **Query** → User question → Embedding → Vector similarity search → Results
@@ -61,13 +61,15 @@ python src/mcp_server.py
 
 **`src/metadata_extractor.py`** - Citation metadata
 - **Strategy pattern** for metadata extraction (tries in order):
-  1. DOI → CrossRef API (BibTeX endpoint)
-  2. arXiv ID → arXiv API (XML parsing)
-  3. PubMed ID → PubMed API (placeholder - not fully implemented)
-  4. PDF metadata (PyMuPDF)
-  5. Document text parsing (fallback)
-- Returns `PaperMetadata` dataclass with `ExtractionMethod` enum
+  1. **pdf2bib** → Extracts DOI/arXiv/PMID directly from PDF → Fetches metadata (NEW - most reliable)
+  2. DOI → CrossRef API (BibTeX endpoint) - from text extraction
+  3. arXiv ID → arXiv API (XML parsing)
+  4. PubMed ID → PubMed API (placeholder - not fully implemented)
+  5. PDF metadata (PyMuPDF)
+  6. Document text parsing (fallback)
+- Returns `PaperMetadata` dataclass with `ExtractionMethod` enum (includes PDF2BIB)
 - Handles BibTeX key collision with letter suffixes (Smith2024a, Smith2024b)
+- **pdf2bib integration**: Uses the pdf2doi library to extract identifiers directly from PDF binary content, which is more reliable than text-based regex extraction
 
 **`src/embeddings.py`** - OpenAI integration
 - Batch processing (default 100 texts/batch) with retry logic
@@ -88,10 +90,11 @@ python src/mcp_server.py
 - Can extract citation keys from LaTeX documents (regex patterns for `\cite{}`, `\citep{}`, `\citet{}`)
 
 **`src/utils.py`** - Helper utilities
-- DOI/arXiv/PMID regex extraction from text
+- DOI/arXiv/PMID regex extraction from text (fallback methods - pdf2bib is primary)
 - BibTeX key generation with collision handling
 - File hashing (SHA256) for duplicate detection
 - Logger setup with file + console output
+- Text cleaning, filename sanitization, timestamp generation
 
 ### Configuration Hierarchy
 
@@ -172,7 +175,7 @@ Log levels configured in `config.yaml` (`log_level: INFO`)
 
 ## Error Handling Patterns
 
-**Graceful degradation in metadata extraction**: If DOI → CrossRef fails, try arXiv, then PDF metadata, then parsing. Always returns some `PaperMetadata` (worst case: title from filename, Unknown authors).
+**Graceful degradation in metadata extraction**: Tries pdf2bib first (most reliable), then text-based DOI → CrossRef, then arXiv, then PDF metadata, then parsing. If pdf2bib is not installed, automatically falls back to text-based methods. Always returns some `PaperMetadata` (worst case: title from filename, Unknown authors).
 
 **Retry logic**: Embeddings and API calls use exponential backoff (1s, 2s, 4s delays).
 
@@ -201,6 +204,14 @@ Log levels configured in `config.yaml` (`log_level: INFO`)
 - text-embedding-3-large: $0.00013 per 1K tokens
 - Typical paper (20 pages): ~10-15 chunks, ~$0.015 total
 - Cost tracked in `EmbeddingResult.token_count` and logged
+
+### pdf2bib Integration
+- **Primary extraction method** (Strategy 1) - extracts identifiers directly from PDF binary
+- More reliable than text-based regex extraction - works even with scanned PDFs or complex layouts
+- Supports DOI, arXiv, and PMID extraction in a single call
+- Automatically queries appropriate APIs (CrossRef, arXiv) based on identifier type
+- **Graceful fallback**: If not installed, system automatically uses text-based extraction methods
+- Configure verbosity: `pdf2bib.config.set('verbose', True)` in `metadata_extractor.py` for debugging
 
 ## Development Workflow
 
