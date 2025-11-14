@@ -10,7 +10,8 @@ Academic RAG Pipeline - A locally-hosted RAG system for academic research paper 
 
 **Output Structure**: For each processed PDF, the system generates:
 - Vector embeddings stored in LanceDB (`data/lancedb/`)
-- Individual BibTeX file in `data/bibs/` (named after the PDF file)
+- Copy of PDF in `data/pdfs/` (renamed using citation key, e.g., `Smith2024.pdf`)
+- Individual BibTeX file in `data/bibs/` (named using citation key, e.g., `Smith2024.bib`)
 
 ## Development Setup
 
@@ -99,6 +100,7 @@ python src/mcp_server.py
 - File hashing (SHA256) for duplicate detection
 - Logger setup with file + console output
 - Text cleaning, filename sanitization, timestamp generation
+- `copy_pdf_to_database()` - Copies PDF to `data/pdfs/` directory with citation key as filename
 - `save_bibtex_file()` - Saves individual .bib files to `data/bibs/` directory
 
 ### Configuration Hierarchy
@@ -108,8 +110,9 @@ python src/mcp_server.py
 3. `CONFIG_PATH` env var - Can override config file location
 
 **Critical paths in config**:
-- `pdf_library_path` - Where PDFs are stored
+- `pdf_library_path` - Where source PDFs are stored
 - `lancedb_path` - Vector database location (default: `./data/lancedb`)
+- `pdfs_path` - Database copies of PDFs, renamed by citation key (default: `./data/pdfs`)
 - `bibs_output_path` - Individual BibTeX files location (default: `./data/bibs`)
 - `openai_api_key` - Required for embeddings
 - `crossref_email` - Polite CrossRef API usage (optional but recommended)
@@ -124,7 +127,9 @@ Each tool is an async function in `mcp_server.py`:
 5. `database_stats` - Aggregate statistics (paper count, year distribution)
 6. `list_recent_papers` - Sort by `date_added` field
 
-**Note**: Tools 2 automatically saves individual .bib files to `data/bibs/` for each processed PDF.
+**Note**: Tool 2 (`add_paper_from_file`) automatically:
+- Copies PDF to `data/pdfs/` renamed with citation key (e.g., `Smith2024.pdf`)
+- Saves individual .bib file to `data/bibs/` named with citation key (e.g., `Smith2024.bib`)
 
 ### Key Dataclasses
 
@@ -183,9 +188,15 @@ Log levels configured in `config.yaml` (`log_level: INFO`)
 
 ## Output Files
 
+**PDF Copies** (`data/pdfs/`):
+- Database copies of processed PDFs
+- Filename uses citation key (e.g., `Smith2024.pdf`)
+- Ensures database has local copy even if original PDF is moved/deleted
+- Path stored in LanceDB for retrieval
+
 **Individual BibTeX Files** (`data/bibs/`):
 - Automatically generated for each processed PDF
-- Filename matches PDF filename (e.g., `paper.pdf` → `paper.bib`)
+- Filename uses citation key (e.g., `Smith2024.bib`)
 - Contains single BibTeX entry with metadata extracted via pdf2bib or fallback methods
 - Useful for quick citation access without querying the database
 

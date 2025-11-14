@@ -20,7 +20,7 @@ from src.metadata_extractor import MetadataExtractor
 from src.embeddings import EmbeddingGenerator
 from src.vector_store import VectorStore
 from src.bibliography import BibliographyManager, BibliographyEntry
-from src.utils import setup_logger, compute_file_hash, save_bibtex_file
+from src.utils import setup_logger, compute_file_hash, save_bibtex_file, copy_pdf_to_database
 
 
 # Set up logging
@@ -64,7 +64,7 @@ def load_config() -> dict:
         config = yaml.safe_load(f)
 
     # Resolve relative paths in config to project root
-    for path_key in ['lancedb_path', 'pdf_library_path', 'default_bib_output']:
+    for path_key in ['lancedb_path', 'pdf_library_path', 'default_bib_output', 'pdfs_path']:
         if path_key in config and config[path_key]:
             path_value = Path(config[path_key])
             if not path_value.is_absolute():
@@ -385,12 +385,27 @@ async def add_paper_from_file_tool(arguments: dict) -> list[types.TextContent]:
     embedding_results = embedding_generator.generate_embeddings_batch(chunk_texts)
     embeddings = [result.embedding for result in embedding_results]
 
-    # Add to vector store
+    # Copy PDF to database storage
+    pdfs_dir = Path(config.get('pdfs_path', 'data/pdfs'))
+    try:
+        copied_pdf_path = copy_pdf_to_database(
+            source_pdf=file_path,
+            bibtex_key=metadata.bibtex_key,
+            output_dir=pdfs_dir
+        )
+        logger.info(f"Copied PDF to database: {copied_pdf_path}")
+        pdf_copied = True
+    except Exception as e:
+        logger.warning(f"Failed to copy PDF: {e}")
+        copied_pdf_path = file_path
+        pdf_copied = False
+
+    # Add to vector store (use copied path if available)
     num_chunks = vector_store.add_paper(
         metadata=metadata,
         chunks=chunks,
         embeddings=embeddings,
-        pdf_path=file_path,
+        pdf_path=copied_pdf_path,
         pdf_hash=pdf_hash,
         tags=custom_tags
     )
@@ -401,8 +416,7 @@ async def add_paper_from_file_tool(arguments: dict) -> list[types.TextContent]:
         bib_file_path = save_bibtex_file(
             bibtex_entry=metadata.bibtex_entry,
             bibtex_key=metadata.bibtex_key,
-            output_dir=bibs_dir,
-            pdf_filename=file_path.name
+            output_dir=bibs_dir
         )
         logger.info(f"Saved BibTeX file: {bib_file_path}")
         bib_saved = True
@@ -427,7 +441,8 @@ Successfully added paper to database!
 **Indexed:** {num_chunks} chunks
 **Tokens Processed:** {stats['total_tokens']}
 **Estimated Cost:** ${stats['estimated_cost_usd']:.4f}
-{'**BibTeX File:** Saved to ' + str(bibs_dir / (file_path.stem + '.bib')) if bib_saved else '**BibTeX File:** Failed to save'}
+{'**PDF File:** Copied to ' + str(pdfs_dir / (metadata.bibtex_key + '.pdf')) if pdf_copied else '**PDF File:** Failed to copy (using original path)'}
+{'**BibTeX File:** Saved to ' + str(bibs_dir / (metadata.bibtex_key + '.bib')) if bib_saved else '**BibTeX File:** Failed to save'}
 
 The paper is now searchable in your database.
 """

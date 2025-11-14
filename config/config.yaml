@@ -7,6 +7,10 @@ pdf_library_path: "./pdfs"  # CHANGE THIS to your PDF directory
 lancedb_path: "./data/lancedb"
 vector_dimension: 3072
 
+# Storage paths
+pdfs_path: "./data/pdfs"  # Database copies of PDFs (named by citation key)
+bibs_output_path: "./data/bibs"  # Individual BibTeX files (named by citation key)
+
 # Embeddings
 embedding_model: "text-embedding-3-large"
 openai_api_key: ""  # Set via OPENAI_API_KEY environment variable

@@ -309,7 +309,36 @@ def sanitize_filename(filename: str) -> str:
     return filename
 
 
-def save_bibtex_file(bibtex_entry: str, bibtex_key: str, output_dir: Path, pdf_filename: Optional[str] = None) -> Path:
+def copy_pdf_to_database(source_pdf: Path, bibtex_key: str, output_dir: Path) -> Path:
+    """
+    Copy a PDF file to the database storage with citation key as filename.
+
+    Args:
+        source_pdf: Path to the source PDF file
+        bibtex_key: The BibTeX citation key (e.g., "Smith2024")
+        output_dir: Directory where PDF should be stored
+
+    Returns:
+        Path to the copied PDF file
+    """
+    import shutil
+
+    # Create output directory if it doesn't exist
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Use bibtex_key as the filename
+    base_name = sanitize_filename(bibtex_key)
+
+    # Create PDF file path
+    pdf_path = output_dir / f"{base_name}.pdf"
+
+    # Copy the PDF file
+    shutil.copy2(source_pdf, pdf_path)
+
+    return pdf_path
+
+
+def save_bibtex_file(bibtex_entry: str, bibtex_key: str, output_dir: Path) -> Path:
     """
     Save a BibTeX entry to an individual .bib file.
 
@@ -317,7 +346,6 @@ def save_bibtex_file(bibtex_entry: str, bibtex_key: str, output_dir: Path, pdf_f
         bibtex_entry: The BibTeX entry string to save
         bibtex_key: The BibTeX citation key (e.g., "Smith2024")
         output_dir: Directory where .bib files should be saved
-        pdf_filename: Optional PDF filename to use as base (without extension)
 
     Returns:
         Path to the saved .bib file
@@ -325,15 +353,8 @@ def save_bibtex_file(bibtex_entry: str, bibtex_key: str, output_dir: Path, pdf_f
     # Create output directory if it doesn't exist
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Determine filename: use PDF filename if provided, otherwise use bibtex_key
-    if pdf_filename:
-        # Remove .pdf extension if present
-        base_name = pdf_filename.replace('.pdf', '').replace('.PDF', '')
-    else:
-        base_name = bibtex_key
-
-    # Sanitize the filename
-    base_name = sanitize_filename(base_name)
+    # Use bibtex_key as the filename
+    base_name = sanitize_filename(bibtex_key)
 
     # Create .bib file path
     bib_path = output_dir / f"{base_name}.bib"

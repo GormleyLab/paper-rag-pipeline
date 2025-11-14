@@ -21,7 +21,7 @@ from src.document_processor import DocumentProcessor
 from src.metadata_extractor import MetadataExtractor
 from src.embeddings import EmbeddingGenerator
 from src.vector_store import VectorStore
-from src.utils import setup_logger, find_pdf_files, compute_file_hash, save_bibtex_file
+from src.utils import setup_logger, find_pdf_files, compute_file_hash, save_bibtex_file, copy_pdf_to_database
 
 
 console = Console()
@@ -119,6 +119,11 @@ def process_pdf_library(config, doc_processor, metadata_extractor, embedding_gen
     bibs_dir.mkdir(parents=True, exist_ok=True)
     logger.info(f"BibTeX files will be saved to: {bibs_dir}")
 
+    # Set up pdfs directory
+    pdfs_dir = Path(config.get('pdfs_path', 'data/pdfs'))
+    pdfs_dir.mkdir(parents=True, exist_ok=True)
+    logger.info(f"PDF files will be copied to: {pdfs_dir}")
+
     # Find all PDFs
     console.print(f"\n[bold blue]Scanning for PDFs in: {pdf_library_path}[/bold blue]")
     pdf_files = find_pdf_files(pdf_library_path, recursive=True)
@@ -183,12 +188,24 @@ def process_pdf_library(config, doc_processor, metadata_extractor, embedding_gen
                 stats = embedding_generator.get_embedding_stats(embedding_results)
                 total_cost += stats['estimated_cost_usd']
 
-                # Add to vector store
+                # Copy PDF to database storage
+                try:
+                    copied_pdf_path = copy_pdf_to_database(
+                        source_pdf=pdf_path,
+                        bibtex_key=metadata.bibtex_key,
+                        output_dir=pdfs_dir
+                    )
+                    logger.info(f"Copied PDF to database: {copied_pdf_path.name}")
+                except Exception as e:
+                    logger.warning(f"Failed to copy PDF for {pdf_path.name}: {e}")
+                    copied_pdf_path = pdf_path
+
+                # Add to vector store (use copied path)
                 vector_store.add_paper(
                     metadata=metadata,
                     chunks=chunks,
                     embeddings=embeddings,
-                    pdf_path=pdf_path,
+                    pdf_path=copied_pdf_path,
                     pdf_hash=pdf_hash
                 )
 
@@ -197,8 +214,7 @@ def process_pdf_library(config, doc_processor, metadata_extractor, embedding_gen
                     bib_file_path = save_bibtex_file(
                         bibtex_entry=metadata.bibtex_entry,
                         bibtex_key=metadata.bibtex_key,
-                        output_dir=bibs_dir,
-                        pdf_filename=pdf_path.name
+                        output_dir=bibs_dir
                     )
                     logger.info(f"Saved BibTeX file: {bib_file_path.name}")
                 except Exception as e:
