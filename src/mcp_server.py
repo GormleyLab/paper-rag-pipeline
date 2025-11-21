@@ -240,6 +240,25 @@ async def handle_list_tools() -> list[types.Tool]:
                     }
                 }
             }
+        ),
+        types.Tool(
+            name="delete_paper",
+            description="Delete a paper from the database and optionally remove associated files",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "bibtex_key": {
+                        "type": "string",
+                        "description": "The BibTeX key of the paper to delete"
+                    },
+                    "delete_files": {
+                        "type": "boolean",
+                        "description": "Whether to delete associated PDF and .bib files (default: true)",
+                        "default": True
+                    }
+                },
+                "required": ["bibtex_key"]
+            }
         )
     ]
 
@@ -270,6 +289,9 @@ async def handle_call_tool(
 
         elif name == "list_recent_papers":
             return await list_recent_papers_tool(arguments)
+
+        elif name == "delete_paper":
+            return await delete_paper_tool(arguments)
 
         else:
             raise ValueError(f"Unknown tool: {name}")
@@ -601,6 +623,96 @@ async def list_recent_papers_tool(arguments: dict) -> list[types.TextContent]:
         )
         output_lines.append(f"   {authors_str} ({paper['year']})")
         output_lines.append(f"   Added: {paper['date_added'][:10]}\n")
+
+    return [types.TextContent(
+        type="text",
+        text="\n".join(output_lines)
+    )]
+
+
+async def delete_paper_tool(arguments: dict) -> list[types.TextContent]:
+    """Delete a paper from the database and optionally delete associated files."""
+    bibtex_key = arguments.get("bibtex_key")
+    delete_files = arguments.get("delete_files", True)
+
+    logger.info(f"Deleting paper: {bibtex_key} (delete_files={delete_files})")
+
+    # First check if paper exists and get its details
+    paper = vector_store.get_paper_by_key(bibtex_key)
+
+    if not paper:
+        return [types.TextContent(
+            type="text",
+            text=f"Error: Paper not found in database: {bibtex_key}"
+        )]
+
+    # Delete from database
+    try:
+        deleted_count = vector_store.delete_paper(bibtex_key)
+        logger.info(f"Deleted {deleted_count} chunks for paper {bibtex_key}")
+    except Exception as e:
+        logger.error(f"Error deleting paper from database: {e}", exc_info=True)
+        return [types.TextContent(
+            type="text",
+            text=f"Error deleting paper from database: {str(e)}"
+        )]
+
+    output_lines = [
+        f"Successfully deleted paper from database: {bibtex_key}",
+        f"- Title: {paper['title']}",
+        f"- Authors: {', '.join(paper['authors'])}",
+        f"- Deleted {deleted_count} chunks"
+    ]
+
+    # Delete associated files if requested
+    if delete_files:
+        files_deleted = []
+        files_not_found = []
+
+        # Delete PDF file
+        pdfs_dir = Path(config.get('pdfs_path', 'data/pdfs'))
+        pdf_path = pdfs_dir / f"{bibtex_key}.pdf"
+
+        if pdf_path.exists():
+            try:
+                pdf_path.unlink()
+                files_deleted.append(f"PDF: {pdf_path}")
+                logger.info(f"Deleted PDF file: {pdf_path}")
+            except Exception as e:
+                logger.error(f"Error deleting PDF file: {e}", exc_info=True)
+                output_lines.append(f"- Warning: Failed to delete PDF file: {e}")
+        else:
+            files_not_found.append(f"PDF: {pdf_path}")
+            logger.info(f"PDF file not found (may have been manually deleted): {pdf_path}")
+
+        # Delete BibTeX file
+        bibs_dir = Path(config.get('bibs_output_path', 'data/bibs'))
+        bib_path = bibs_dir / f"{bibtex_key}.bib"
+
+        if bib_path.exists():
+            try:
+                bib_path.unlink()
+                files_deleted.append(f".bib: {bib_path}")
+                logger.info(f"Deleted BibTeX file: {bib_path}")
+            except Exception as e:
+                logger.error(f"Error deleting BibTeX file: {e}", exc_info=True)
+                output_lines.append(f"- Warning: Failed to delete BibTeX file: {e}")
+        else:
+            files_not_found.append(f".bib: {bib_path}")
+            logger.info(f"BibTeX file not found (may have been manually deleted): {bib_path}")
+
+        # Add file deletion summary to output
+        if files_deleted:
+            output_lines.append(f"\nDeleted files:")
+            for file_desc in files_deleted:
+                output_lines.append(f"  - {file_desc}")
+
+        if files_not_found:
+            output_lines.append(f"\nFiles not found (already deleted or never created):")
+            for file_desc in files_not_found:
+                output_lines.append(f"  - {file_desc}")
+    else:
+        output_lines.append("\n- Associated files were not deleted (delete_files=False)")
 
     return [types.TextContent(
         type="text",
