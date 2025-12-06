@@ -72,7 +72,7 @@ crossref_email: ""
 # ===========================================
 
 # Server identification
-server_name: "academic-rag-remote"
+server_name: "paper-rag-remote"
 server_version: "1.0.0"
 
 # HTTP server settings

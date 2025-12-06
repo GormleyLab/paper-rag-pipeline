@@ -704,7 +704,7 @@ CROSSREF_EMAIL=your.email@university.edu
 **CrossRef API Integration:**
 - Endpoint: `https://api.crossref.org/works/{doi}/transform/application/x-bibtex`
 - Method: GET
-- Headers: `User-Agent: AcademicRAG/1.0 (mailto:{email})`
+- Headers: `User-Agent: PaperRAG/1.0 (mailto:{email})`
 - Rate Limit: 50 requests/second (polite pool)
 - Retry Strategy: 3 attempts with exponential backoff
 

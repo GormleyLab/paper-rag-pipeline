@@ -26,7 +26,7 @@ crossref_api_url: "https://api.crossref.org/works"
 crossref_email: ""  # Set via CROSSREF_EMAIL environment variable (optional but recommended)
 
 # MCP Server
-server_name: "academic-rag"
+server_name: "paper-rag"
 log_level: "INFO"
 
 # Bibliography

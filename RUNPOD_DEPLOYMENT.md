@@ -324,7 +324,7 @@ import httpx
 import base64
 from pathlib import Path
 
-class AcademicRAGClient:
+class PaperRAGClient:
     def __init__(self, endpoint_id: str, api_key: str):
         self.base_url = f"https://api.runpod.ai/v2/{endpoint_id}"
         self.headers = {
@@ -390,7 +390,7 @@ class AcademicRAGClient:
 
 
 # Usage examples
-client = AcademicRAGClient("YOUR_ENDPOINT_ID", "YOUR_MCP_API_KEY")
+client = PaperRAGClient("YOUR_ENDPOINT_ID", "YOUR_MCP_API_KEY")
 
 # Search papers
 results = client.search_papers("neural networks")
