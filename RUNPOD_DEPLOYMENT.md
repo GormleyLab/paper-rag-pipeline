@@ -210,36 +210,107 @@ If successful, you'll see results from your remote database!
 
 ## Adding Papers Remotely
 
-### Option 1: Via Claude Desktop
+### Option 1: Upload Single PDF via Claude Desktop (Recommended)
 
-1. Upload a PDF file to a cloud storage (e.g., Google Drive, Dropbox)
-2. Get a direct download URL
-3. Download the PDF to the RunPod volume using the API
+Use the `add_paper_from_upload` tool to upload a PDF directly from your local machine:
 
-### Option 2: Direct API Call
+```
+Add this paper to my database: [attach PDF file]
+```
 
-Use the RunPod API to add papers:
+Claude Desktop will encode the PDF as base64 and send it to the remote server. The tool accepts:
+- `pdf_data`: Base64-encoded PDF content
+- `filename`: Original filename
+- `custom_tags`: Optional tags to categorize the paper
+
+### Option 2: Batch Upload from Local Folder
+
+Use the `add_papers_from_folder_upload` tool to upload multiple PDFs at once:
+
+```
+Add all PDFs from my research folder to the database
+```
+
+The client reads all PDFs from the local folder, encodes them as base64, and sends them in a single request. Parameters:
+- `pdf_files`: List of objects with `filename` and `pdf_data` (base64)
+- `custom_tags`: Optional tags applied to all papers
+
+**Response includes:**
+- Summary: processed/skipped/failed counts
+- List of successfully added papers with BibTeX keys
+- List of skipped duplicates
+- List of failures with error messages
+- Total embedding cost
+
+**Example batch upload response:**
+```
+**Batch Upload Complete!**
+
+**Summary:**
+- Processed: 8 papers
+- Skipped (duplicates): 2 papers
+- Failed: 1 paper
+- Total Embedding Cost: $0.1234
+
+**Successfully Added:**
+1. [Smith2024] "Machine Learning in Healthcare"
+2. [Jones2023] "Deep Learning Approaches"
+...
+```
+
+### Option 3: Direct API Call with Base64 Data
+
+Upload a PDF programmatically:
 
 ```bash
-curl -X POST "https://api.runpod.ai/v2/YOUR_ENDPOINT_ID/run" \
-  -H "Authorization: Bearer YOUR_RUNPOD_API_KEY" \
+# Encode PDF to base64
+PDF_BASE64=$(base64 -i paper.pdf)
+
+# Call the upload tool
+curl -X POST "https://api.runpod.ai/v2/YOUR_ENDPOINT_ID/mcp" \
+  -H "Authorization: Bearer YOUR_MCP_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
-    "input": {
-      "mode": "tool_call",
-      "tool": "add_paper_from_file",
+    "jsonrpc": "2.0",
+    "method": "tools/call",
+    "params": {
+      "name": "add_paper_from_upload",
       "arguments": {
-        "file_path": "/runpod-volume/pdfs/incoming/paper.pdf"
+        "pdf_data": "'"$PDF_BASE64"'",
+        "filename": "paper.pdf",
+        "custom_tags": ["research", "2024"]
       }
-    }
+    },
+    "id": 1
   }'
 ```
 
-### Option 3: Upload to Network Volume
+### Option 4: Server-Side File Path
+
+If the PDF already exists on the RunPod volume:
+
+```bash
+curl -X POST "https://api.runpod.ai/v2/YOUR_ENDPOINT_ID/mcp" \
+  -H "Authorization: Bearer YOUR_MCP_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "jsonrpc": "2.0",
+    "method": "tools/call",
+    "params": {
+      "name": "add_paper_from_file",
+      "arguments": {
+        "file_path": "/runpod-volume/pdfs/incoming/paper.pdf"
+      }
+    },
+    "id": 1
+  }'
+```
+
+### Option 5: Upload to Network Volume First
 
 1. Create a RunPod Pod with the same Network Volume attached
-2. Upload PDFs via SSH/SFTP
-3. Use the MCP server to add them to the database
+2. Upload PDFs via SSH/SFTP to `/runpod-volume/pdfs/incoming/`
+3. Use the `add_paper_from_file` tool to process them
 
 ---
 
@@ -249,6 +320,8 @@ curl -X POST "https://api.runpod.ai/v2/YOUR_ENDPOINT_ID/run" \
 
 ```python
 import httpx
+import base64
+from pathlib import Path
 
 class AcademicRAGClient:
     def __init__(self, endpoint_id: str, api_key: str):
@@ -258,51 +331,77 @@ class AcademicRAGClient:
             "Content-Type": "application/json"
         }
 
-    def search_papers(self, query: str, n_results: int = 5):
-        """Search papers using semantic search."""
+    def _call_tool(self, name: str, arguments: dict, timeout: float = 60.0):
+        """Call an MCP tool."""
         response = httpx.post(
             f"{self.base_url}/mcp",
             headers=self.headers,
             json={
                 "jsonrpc": "2.0",
                 "method": "tools/call",
-                "params": {
-                    "name": "search_papers",
-                    "arguments": {
-                        "query": query,
-                        "n_results": n_results,
-                        "output_format": "json"
-                    }
-                },
+                "params": {"name": name, "arguments": arguments},
                 "id": 1
             },
-            timeout=60.0
+            timeout=timeout
         )
         return response.json()
+
+    def search_papers(self, query: str, n_results: int = 5):
+        """Search papers using semantic search."""
+        return self._call_tool("search_papers", {
+            "query": query,
+            "n_results": n_results,
+            "output_format": "json"
+        })
 
     def get_stats(self):
         """Get database statistics."""
-        response = httpx.post(
-            f"{self.base_url}/mcp",
-            headers=self.headers,
-            json={
-                "jsonrpc": "2.0",
-                "method": "tools/call",
-                "params": {
-                    "name": "database_stats",
-                    "arguments": {}
-                },
-                "id": 1
-            },
-            timeout=30.0
-        )
-        return response.json()
+        return self._call_tool("database_stats", {}, timeout=30.0)
+
+    def upload_pdf(self, pdf_path: Path, tags: list[str] = None):
+        """Upload a single PDF from local machine."""
+        pdf_data = base64.b64encode(pdf_path.read_bytes()).decode('utf-8')
+        return self._call_tool("add_paper_from_upload", {
+            "pdf_data": pdf_data,
+            "filename": pdf_path.name,
+            "custom_tags": tags or []
+        }, timeout=300.0)
+
+    def upload_folder(self, folder_path: Path, tags: list[str] = None, recursive: bool = False):
+        """Upload all PDFs from a local folder."""
+        pattern = "**/*.pdf" if recursive else "*.pdf"
+        pdf_files = []
+
+        for pdf_path in folder_path.glob(pattern):
+            pdf_data = base64.b64encode(pdf_path.read_bytes()).decode('utf-8')
+            pdf_files.append({
+                "filename": pdf_path.name,
+                "pdf_data": pdf_data
+            })
+
+        if not pdf_files:
+            return {"error": "No PDF files found in folder"}
+
+        return self._call_tool("add_papers_from_folder_upload", {
+            "pdf_files": pdf_files,
+            "custom_tags": tags or []
+        }, timeout=600.0)  # Longer timeout for batch
 
 
-# Usage
+# Usage examples
 client = AcademicRAGClient("YOUR_ENDPOINT_ID", "YOUR_MCP_API_KEY")
+
+# Search papers
 results = client.search_papers("neural networks")
 print(results)
+
+# Upload single PDF
+result = client.upload_pdf(Path("paper.pdf"), tags=["research"])
+print(result)
+
+# Upload all PDFs from a folder
+result = client.upload_folder(Path("./papers"), tags=["batch-2024"])
+print(result)
 ```
 
 ---

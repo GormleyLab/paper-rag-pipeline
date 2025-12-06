@@ -71,6 +71,24 @@ def compute_file_hash(file_path: Path) -> str:
     return sha256_hash.hexdigest()
 
 
+def compute_hash_from_bytes(data: bytes) -> str:
+    """
+    Compute SHA256 hash of bytes data for duplicate detection.
+
+    Useful for computing hashes from in-memory data (e.g., base64-decoded PDF uploads)
+    without needing to write to disk first.
+
+    Args:
+        data: Binary data to hash
+
+    Returns:
+        Hexadecimal SHA256 hash string
+    """
+    sha256_hash = hashlib.sha256()
+    sha256_hash.update(data)
+    return sha256_hash.hexdigest()
+
+
 def extract_doi_from_text(text: str) -> Optional[str]:
     """
     Extract DOI from text using regex patterns.

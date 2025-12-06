@@ -8,6 +8,8 @@ import os
 import sys
 import json
 import logging
+import base64
+import tempfile
 from pathlib import Path
 from typing import Optional, Any
 import yaml
@@ -20,7 +22,7 @@ from src.metadata_extractor import MetadataExtractor
 from src.embeddings import EmbeddingGenerator
 from src.vector_store import VectorStore
 from src.bibliography import BibliographyManager, BibliographyEntry
-from src.utils import setup_logger, compute_file_hash, save_bibtex_file, copy_pdf_to_database
+from src.utils import setup_logger, compute_file_hash, compute_hash_from_bytes, save_bibtex_file, copy_pdf_to_database
 
 
 # Set up logging - use stdout for container compatibility
@@ -371,6 +373,363 @@ The paper is now searchable in your database.
 """
 
     return output
+
+
+@mcp.tool()
+async def add_paper_from_upload(
+    pdf_data: str,
+    filename: str,
+    custom_tags: Optional[list[str]] = None
+) -> str:
+    """
+    Add a PDF paper to the database from base64-encoded data.
+
+    This tool accepts PDF content directly uploaded from Claude Desktop,
+    enabling PDF uploads to the remote MCP server without requiring files
+    to exist on the server filesystem.
+
+    Args:
+        pdf_data: Base64-encoded PDF file content
+        filename: Original filename of the PDF (for logging and metadata fallback)
+        custom_tags: Optional list of tags to associate with the paper
+
+    Returns:
+        Status message with paper details
+    """
+    initialize_components()
+
+    if custom_tags is None:
+        custom_tags = []
+
+    logger.info(f"Adding paper from upload: {filename}")
+
+    # Step 1: Decode base64 data
+    try:
+        pdf_bytes = base64.b64decode(pdf_data)
+    except Exception as e:
+        logger.error(f"Failed to decode base64 PDF data: {e}")
+        return f"Error: Invalid base64 data - {str(e)}"
+
+    # Step 2: Validate PDF magic bytes
+    if not pdf_bytes.startswith(b'%PDF'):
+        return "Error: Invalid PDF file - data does not start with PDF magic bytes"
+
+    # Step 3: Compute hash for duplicate detection (before writing to disk)
+    pdf_hash = compute_hash_from_bytes(pdf_bytes)
+
+    if _vector_store.check_duplicate(pdf_hash):
+        return f"Paper already exists in database (duplicate PDF detected): {filename}"
+
+    # Step 4: Write to temporary file for processing
+    temp_path = None
+    try:
+        # Create temp file with .pdf suffix (important for some processors)
+        with tempfile.NamedTemporaryFile(
+            mode='wb',
+            suffix='.pdf',
+            delete=False  # We manage deletion manually for proper cleanup
+        ) as temp_file:
+            temp_file.write(pdf_bytes)
+            temp_path = Path(temp_file.name)
+
+        logger.info(f"Created temporary file: {temp_path}")
+
+        # Step 5: Process PDF using existing pipeline
+        doc, chunks = _doc_processor.process_pdf(temp_path)
+
+        # Step 6: Extract text from first pages for metadata
+        first_pages_text = _doc_processor.extract_text_from_first_pages(temp_path)
+
+        # Step 7: Extract metadata
+        existing_keys = _vector_store.get_all_bibtex_keys()
+        metadata = _metadata_extractor.extract_metadata(
+            temp_path,
+            first_pages_text=first_pages_text,
+            existing_keys=existing_keys
+        )
+
+        # Step 8: Generate embeddings
+        chunk_texts = [chunk.text for chunk in chunks]
+        embedding_results = _embedding_generator.generate_embeddings_batch(chunk_texts)
+        embeddings = [result.embedding for result in embedding_results]
+
+        # Step 9: Copy PDF to permanent storage
+        cfg = load_config()
+        pdfs_dir = Path(cfg.get('pdfs_path', 'data/pdfs'))
+        pdfs_dir.mkdir(parents=True, exist_ok=True)
+
+        try:
+            copied_pdf_path = copy_pdf_to_database(
+                source_pdf=temp_path,
+                bibtex_key=metadata.bibtex_key,
+                output_dir=pdfs_dir
+            )
+            logger.info(f"Copied PDF to database: {copied_pdf_path}")
+            pdf_copied = True
+        except Exception as e:
+            logger.warning(f"Failed to copy PDF: {e}")
+            copied_pdf_path = temp_path
+            pdf_copied = False
+
+        # Step 10: Add to vector store
+        num_chunks = _vector_store.add_paper(
+            metadata=metadata,
+            chunks=chunks,
+            embeddings=embeddings,
+            pdf_path=copied_pdf_path,
+            pdf_hash=pdf_hash,
+            tags=custom_tags
+        )
+
+        # Step 11: Save individual BibTeX file
+        bibs_dir = Path(cfg.get('bibs_output_path', 'data/bibs'))
+        bibs_dir.mkdir(parents=True, exist_ok=True)
+
+        try:
+            bib_file_path = save_bibtex_file(
+                bibtex_entry=metadata.bibtex_entry,
+                bibtex_key=metadata.bibtex_key,
+                output_dir=bibs_dir
+            )
+            logger.info(f"Saved BibTeX file: {bib_file_path}")
+            bib_saved = True
+        except Exception as e:
+            logger.warning(f"Failed to save BibTeX file: {e}")
+            bib_saved = False
+
+        # Step 12: Get embedding stats
+        stats = _embedding_generator.get_embedding_stats(embedding_results)
+
+        output = f"""
+Successfully added paper to database!
+
+**Title:** {metadata.title}
+**Authors:** {', '.join(metadata.authors)}
+**Year:** {metadata.year}
+**BibTeX Key:** {metadata.bibtex_key}
+**DOI:** {metadata.doi or 'N/A'}
+**URL:** {metadata.url or 'N/A'}
+**Extraction Method:** {metadata.extraction_method.value}
+**Original Filename:** {filename}
+
+**Indexed:** {num_chunks} chunks
+**Tokens Processed:** {stats['total_tokens']}
+**Estimated Cost:** ${stats['estimated_cost_usd']:.4f}
+{'**PDF File:** Saved to ' + str(pdfs_dir / (metadata.bibtex_key + '.pdf')) if pdf_copied else '**PDF File:** Failed to save'}
+{'**BibTeX File:** Saved to ' + str(bibs_dir / (metadata.bibtex_key + '.bib')) if bib_saved else '**BibTeX File:** Failed to save'}
+
+The paper is now searchable in your database.
+"""
+
+        return output
+
+    except Exception as e:
+        logger.error(f"Error processing uploaded PDF: {e}", exc_info=True)
+        return f"Error processing PDF: {str(e)}"
+
+    finally:
+        # Clean up temporary file
+        if temp_path is not None and temp_path.exists():
+            try:
+                temp_path.unlink()
+                logger.info(f"Cleaned up temporary file: {temp_path}")
+            except Exception as e:
+                logger.warning(f"Failed to clean up temporary file: {e}")
+
+
+@mcp.tool()
+async def add_papers_from_folder_upload(
+    pdf_files: list[dict],
+    custom_tags: Optional[list[str]] = None
+) -> str:
+    """
+    Add multiple PDF papers to the database from base64-encoded data.
+
+    Use this for batch uploading PDFs from a local folder. The client should
+    read all PDFs from the folder, encode them as base64, and send them in
+    a single request.
+
+    Args:
+        pdf_files: List of dicts, each with 'filename' (str) and 'pdf_data' (str, base64-encoded)
+        custom_tags: Optional list of tags to apply to all papers
+
+    Returns:
+        Summary with processed/skipped/failed counts and details
+    """
+    initialize_components()
+
+    if custom_tags is None:
+        custom_tags = []
+
+    logger.info(f"Batch upload started: {len(pdf_files)} PDFs")
+
+    # Initialize tracking
+    processed = 0
+    skipped = 0
+    failed = 0
+    total_cost = 0.0
+
+    successful_papers = []  # List of (bibtex_key, title)
+    skipped_papers = []     # List of (filename, reason)
+    failed_papers = []      # List of (filename, error_message)
+
+    # Get existing BibTeX keys once for collision detection across batch
+    existing_keys = _vector_store.get_all_bibtex_keys()
+
+    # Get config for output paths
+    cfg = load_config()
+    pdfs_dir = Path(cfg.get('pdfs_path', 'data/pdfs'))
+    bibs_dir = Path(cfg.get('bibs_output_path', 'data/bibs'))
+    pdfs_dir.mkdir(parents=True, exist_ok=True)
+    bibs_dir.mkdir(parents=True, exist_ok=True)
+
+    for pdf_item in pdf_files:
+        filename = pdf_item.get('filename', 'unknown.pdf')
+        pdf_data = pdf_item.get('pdf_data', '')
+        temp_path = None
+
+        try:
+            # Step 1: Decode base64 data
+            try:
+                pdf_bytes = base64.b64decode(pdf_data)
+            except Exception as e:
+                logger.error(f"Failed to decode base64 for {filename}: {e}")
+                failed_papers.append((filename, f"Invalid base64 data: {str(e)}"))
+                failed += 1
+                continue
+
+            # Step 2: Validate PDF magic bytes
+            if not pdf_bytes.startswith(b'%PDF'):
+                logger.warning(f"Invalid PDF magic bytes for {filename}")
+                failed_papers.append((filename, "Invalid PDF file - not a valid PDF"))
+                failed += 1
+                continue
+
+            # Step 3: Compute hash for duplicate detection
+            pdf_hash = compute_hash_from_bytes(pdf_bytes)
+
+            if _vector_store.check_duplicate(pdf_hash):
+                logger.info(f"Skipping duplicate: {filename}")
+                skipped_papers.append((filename, "already in database"))
+                skipped += 1
+                continue
+
+            # Step 4: Write to temporary file
+            with tempfile.NamedTemporaryFile(
+                mode='wb',
+                suffix='.pdf',
+                delete=False
+            ) as temp_file:
+                temp_file.write(pdf_bytes)
+                temp_path = Path(temp_file.name)
+
+            logger.info(f"Processing: {filename}")
+
+            # Step 5: Process PDF using existing pipeline
+            doc, chunks = _doc_processor.process_pdf(temp_path)
+
+            # Step 6: Extract text from first pages for metadata
+            first_pages_text = _doc_processor.extract_text_from_first_pages(temp_path)
+
+            # Step 7: Extract metadata (use existing_keys set that we update)
+            metadata = _metadata_extractor.extract_metadata(
+                temp_path,
+                first_pages_text=first_pages_text,
+                existing_keys=existing_keys
+            )
+
+            # Add new key to existing_keys to prevent collisions within batch
+            existing_keys.add(metadata.bibtex_key)
+
+            # Step 8: Generate embeddings
+            chunk_texts = [chunk.text for chunk in chunks]
+            embedding_results = _embedding_generator.generate_embeddings_batch(chunk_texts)
+            embeddings = [result.embedding for result in embedding_results]
+
+            # Track cost
+            stats = _embedding_generator.get_embedding_stats(embedding_results)
+            total_cost += stats['estimated_cost_usd']
+
+            # Step 9: Copy PDF to permanent storage
+            try:
+                copied_pdf_path = copy_pdf_to_database(
+                    source_pdf=temp_path,
+                    bibtex_key=metadata.bibtex_key,
+                    output_dir=pdfs_dir
+                )
+            except Exception as e:
+                logger.warning(f"Failed to copy PDF for {filename}: {e}")
+                copied_pdf_path = temp_path
+
+            # Step 10: Add to vector store
+            _vector_store.add_paper(
+                metadata=metadata,
+                chunks=chunks,
+                embeddings=embeddings,
+                pdf_path=copied_pdf_path,
+                pdf_hash=pdf_hash,
+                tags=custom_tags
+            )
+
+            # Step 11: Save individual BibTeX file
+            try:
+                save_bibtex_file(
+                    bibtex_entry=metadata.bibtex_entry,
+                    bibtex_key=metadata.bibtex_key,
+                    output_dir=bibs_dir
+                )
+            except Exception as e:
+                logger.warning(f"Failed to save BibTeX file for {filename}: {e}")
+
+            # Track success
+            successful_papers.append((metadata.bibtex_key, metadata.title))
+            processed += 1
+            logger.info(f"Successfully processed: {filename} -> [{metadata.bibtex_key}]")
+
+        except Exception as e:
+            logger.error(f"Failed to process {filename}: {e}", exc_info=True)
+            failed_papers.append((filename, str(e)))
+            failed += 1
+
+        finally:
+            # Clean up temporary file
+            if temp_path is not None and temp_path.exists():
+                try:
+                    temp_path.unlink()
+                except Exception as e:
+                    logger.warning(f"Failed to clean up temp file for {filename}: {e}")
+
+    # Build response
+    output_lines = ["**Batch Upload Complete!**\n"]
+
+    output_lines.append("**Summary:**")
+    output_lines.append(f"- Processed: {processed} papers")
+    output_lines.append(f"- Skipped (duplicates): {skipped} papers")
+    output_lines.append(f"- Failed: {failed} papers")
+    output_lines.append(f"- Total Embedding Cost: ${total_cost:.4f}\n")
+
+    if successful_papers:
+        output_lines.append("**Successfully Added:**")
+        for i, (key, title) in enumerate(successful_papers, 1):
+            # Truncate long titles
+            display_title = title[:60] + "..." if len(title) > 60 else title
+            output_lines.append(f"{i}. [{key}] \"{display_title}\"")
+        output_lines.append("")
+
+    if skipped_papers:
+        output_lines.append("**Skipped (duplicates):**")
+        for filename, reason in skipped_papers:
+            output_lines.append(f"- {filename} ({reason})")
+        output_lines.append("")
+
+    if failed_papers:
+        output_lines.append("**Failed:**")
+        for filename, error in failed_papers:
+            # Truncate long error messages
+            display_error = error[:80] + "..." if len(error) > 80 else error
+            output_lines.append(f"- {filename}: {display_error}")
+
+    return "\n".join(output_lines)
 
 
 @mcp.tool()
