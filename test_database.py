@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Simple test script for the Academic RAG Pipeline database.
+Simple test script for the Paper RAG Pipeline database.
 Tests basic functionality without MCP protocol.
 """
 
@@ -26,7 +26,7 @@ from src.mcp_server import (
 
 async def test_database():
     """Test basic database functionality."""
-    print("🧪 Testing Academic RAG Pipeline Database\n")
+    print("🧪 Testing Paper RAG Pipeline Database\n")
     
     try:
         # Initialize components

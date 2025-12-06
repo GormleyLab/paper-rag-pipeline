@@ -1,4 +1,4 @@
-# Product Requirements Document: Academic RAG Pipeline for Research & Citation Management
+# Product Requirements Document: Paper RAG Pipeline for Research & Citation Management
 
 ## Document Information
 
@@ -11,7 +11,7 @@
 
 ## Executive Summary
 
-The Academic RAG Pipeline is a locally-hosted, privacy-focused system designed to transform how researchers interact with their paper libraries during grant writing and academic writing. By combining advanced document processing (Docling), vector search (LanceDB), and AI assistance (Claude via MCP), this tool enables intelligent citation management, contextual paper retrieval, and automated bibliography generation for LaTeX documents, with particular focus on NIH grant applications.
+The Paper RAG Pipeline is a locally-hosted, privacy-focused system designed to transform how researchers interact with their paper libraries during grant writing and academic writing. By combining advanced document processing (Docling), vector search (LanceDB), and AI assistance (Claude via MCP), this tool enables intelligent citation management, contextual paper retrieval, and automated bibliography generation for LaTeX documents, with particular focus on NIH grant applications.
 
 ---
 
@@ -282,7 +282,7 @@ A RAG (Retrieval Augmented Generation) pipeline that:
 ```json
 {
   "mcpServers": {
-    "academic-rag": {
+    "paper-rag": {
       "command": "/path/to/project/.venv/Scripts/python.exe",
       "args": ["/path/to/mcp_server.py"],
       "env": {
@@ -624,7 +624,7 @@ pydantic>=2.0.0
 
 **Directory Structure:**
 ```
-academic-rag-pipeline/
+paper-rag-pipeline/
 ├── src/
 │   ├── __init__.py
 │   ├── mcp_server.py              # MCP server implementation
@@ -685,7 +685,7 @@ crossref_api_url: "https://api.crossref.org/works"
 crossref_email: "user@example.com"  # For polite API use
 
 # MCP Server
-server_name: "academic-rag"
+server_name: "paper-rag"
 log_level: "INFO"
 
 # Bibliography
@@ -1015,15 +1015,15 @@ CROSSREF_EMAIL=your.email@university.edu
 ```json
 {
   "mcpServers": {
-    "academic-rag": {
-      "command": "/Users/adam/academic-rag-pipeline/.venv/bin/python",
+    "paper-rag": {
+      "command": "/Users/adam/paper-rag-pipeline/.venv/bin/python",
       "args": [
-        "/Users/adam/academic-rag-pipeline/src/mcp_server.py"
+        "/Users/adam/paper-rag-pipeline/src/mcp_server.py"
       ],
       "env": {
-        "PYTHONPATH": "/Users/adam/academic-rag-pipeline",
+        "PYTHONPATH": "/Users/adam/paper-rag-pipeline",
         "OPENAI_API_KEY": "sk-...",
-        "CONFIG_PATH": "/Users/adam/academic-rag-pipeline/config/config.yaml"
+        "CONFIG_PATH": "/Users/adam/paper-rag-pipeline/config/config.yaml"
       }
     }
   }

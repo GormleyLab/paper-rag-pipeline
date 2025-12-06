@@ -1,4 +1,4 @@
-# Academic RAG Pipeline Configuration
+# Paper RAG Pipeline Configuration
 
 # PDF Library
 pdf_library_path: "./pdfs"  # CHANGE THIS to your PDF directory

@@ -1,5 +1,5 @@
 """
-MCP HTTP Server for Academic RAG Pipeline.
+MCP HTTP Server for Paper RAG Pipeline.
 Provides MCP tools over HTTP for remote access (RunPod deployment).
 Uses FastMCP with Streamable HTTP transport.
 """

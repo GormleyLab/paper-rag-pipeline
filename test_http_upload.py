@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Test script for the Academic RAG Pipeline HTTP server upload tools.
+Test script for the Paper RAG Pipeline HTTP server upload tools.
 Tests the new add_paper_from_upload and add_papers_from_folder_upload tools.
 
 Usage:
@@ -329,7 +329,7 @@ async def main():
                        help="Also test via HTTP server")
     args = parser.parse_args()
 
-    print("\n🧪 Academic RAG Pipeline - HTTP Upload Tools Test\n")
+    print("\n🧪 Paper RAG Pipeline - HTTP Upload Tools Test\n")
 
     # Always run direct tests
     success = await test_upload_tools_direct()

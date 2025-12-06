@@ -1,5 +1,5 @@
 """
-RunPod Serverless Handler for Academic RAG Pipeline.
+RunPod Serverless Handler for Paper RAG Pipeline.
 
 This handler provides two modes of operation:
 1. HTTP Server Mode: Starts a persistent HTTP server for MCP protocol (default)

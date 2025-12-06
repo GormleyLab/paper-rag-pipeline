@@ -1,5 +1,5 @@
 """
-Utility functions for the Academic RAG Pipeline.
+Utility functions for the Paper RAG Pipeline.
 """
 
 import hashlib

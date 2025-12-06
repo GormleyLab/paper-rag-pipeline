@@ -1,6 +1,6 @@
 # RunPod Deployment Guide
 
-Deploy the Academic RAG Pipeline as a remote MCP HTTP server on RunPod Serverless.
+Deploy the Paper RAG Pipeline as a remote MCP HTTP server on RunPod Serverless.
 
 ## Overview
 
@@ -25,25 +25,25 @@ This deployment provides:
 ### Build the image locally
 
 ```bash
-cd /path/to/academic-rag-pipeline
+cd /path/to/paper-rag-pipeline
 
 # Build the GPU-enabled image for AMD64 platform (required for RunPod)
 # Use --platform flag when building on ARM Macs to avoid platform mismatch warnings
-docker build --platform linux/amd64 -t your-dockerhub-username/academic-rag:latest .
+docker build --platform linux/amd64 -t your-dockerhub-username/paper-rag:latest .
 
 # Test locally (optional)
 docker run --rm -it \
   -e OPENAI_API_KEY=sk-your-key \
   -e MCP_API_KEY=your-secret-key \
   -p 8080:8080 \
-  your-dockerhub-username/academic-rag:latest
+  your-dockerhub-username/paper-rag:latest
 ```
 
 ### Push to Docker Hub
 
 ```bash
 docker login
-docker push your-dockerhub-username/academic-rag:latest
+docker push your-dockerhub-username/paper-rag:latest
 ```
 
 ---
@@ -56,7 +56,7 @@ Network Volumes provide persistent storage that survives serverless worker scali
 2. Navigate to **Storage** → **Network Volumes**
 3. Click **Create Network Volume**
 4. Configure:
-   - **Name**: `academic-rag-data`
+   - **Name**: `paper-rag-data`
    - **Size**: 20 GB minimum (adjust based on expected PDF count)
    - **Region**: Choose region closest to you (must match endpoint region)
 5. Click **Create**
@@ -88,8 +88,8 @@ The server will automatically create this directory structure:
 
 | Setting | Value |
 |---------|-------|
-| **Endpoint Name** | `academic-rag-mcp` |
-| **Container Image** | `your-dockerhub-username/academic-rag:latest` |
+| **Endpoint Name** | `paper-rag-mcp` |
+| **Container Image** | `your-dockerhub-username/paper-rag:latest` |
 | **Container Start Command** | Leave empty (uses Dockerfile CMD) |
 
 ### GPU Configuration
@@ -125,7 +125,7 @@ Click **Add Environment Variable** for each:
 ### Network Volume
 
 1. Expand **Advanced** section
-2. Under **Network Volume**, select `academic-rag-data`
+2. Under **Network Volume**, select `paper-rag-data`
 3. Mount path: `/runpod-volume`
 
 ### Create Endpoint
@@ -166,7 +166,7 @@ Add the following configuration:
 ```json
 {
   "mcpServers": {
-    "academic-rag-remote": {
+    "paper-rag-remote": {
       "command": "npx",
       "args": [
         "mcp-remote",
@@ -489,11 +489,11 @@ curl "https://api.runpod.ai/v2/YOUR_ENDPOINT_ID/health" \
 
 ```bash
 # Build new version (use --platform for ARM Macs)
-docker build --platform linux/amd64 -t your-dockerhub-username/academic-rag:v2 .
-docker push your-dockerhub-username/academic-rag:v2
+docker build --platform linux/amd64 -t your-dockerhub-username/paper-rag:v2 .
+docker push your-dockerhub-username/paper-rag:v2
 
 # Update endpoint in RunPod Console
-# Change image to: your-dockerhub-username/academic-rag:v2
+# Change image to: your-dockerhub-username/paper-rag:v2
 ```
 
 ### Update Configuration
@@ -516,7 +516,7 @@ docker push your-dockerhub-username/academic-rag:v2
 
 | Item | Value |
 |------|-------|
-| **Docker Image** | `your-dockerhub-username/academic-rag:latest` |
+| **Docker Image** | `your-dockerhub-username/paper-rag:latest` |
 | **Endpoint URL** | `https://api.runpod.ai/v2/ENDPOINT_ID` |
 | **MCP Endpoint** | `https://api.runpod.ai/v2/ENDPOINT_ID/mcp` |
 | **Health Check** | `https://api.runpod.ai/v2/ENDPOINT_ID/health` |

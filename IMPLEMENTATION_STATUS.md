@@ -1,4 +1,4 @@
-# Implementation Status - Academic RAG Pipeline
+# Implementation Status - Paper RAG Pipeline
 
 **Version:** 1.0.0 (MVP)
 **Date:** November 11, 2025
@@ -8,7 +8,7 @@
 
 ## Summary
 
-The Academic RAG Pipeline MVP has been successfully implemented with all core components functioning. The system can now process PDF research papers, extract metadata, generate embeddings, and provide intelligent search capabilities through Claude Desktop.
+The Paper RAG Pipeline MVP has been successfully implemented with all core components functioning. The system can now process PDF research papers, extract metadata, generate embeddings, and provide intelligent search capabilities through Claude Desktop.
 
 ## Implemented Components
 
@@ -164,7 +164,7 @@ Before deploying to production use, test the following:
 ## File Structure
 
 ```
-academic-rag-pipeline/
+paper-rag-pipeline/
 ├── src/
 │   ├── __init__.py                ✅
 │   ├── mcp_server.py              ✅ MCP server with 6 tools
@@ -249,7 +249,7 @@ Before using the system:
 
 ## Conclusion
 
-The Academic RAG Pipeline MVP is **ready for initial use**. All core components are implemented and the system is functional. Users should:
+The Paper RAG Pipeline MVP is **ready for initial use**. All core components are implemented and the system is functional. Users should:
 
 1. Follow the setup guide in `docs/setup.md`
 2. Test with a small library first (~10-20 papers)

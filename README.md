@@ -1,4 +1,4 @@
-# Academic RAG Pipeline for Research & Citation Management
+# Paper RAG Pipeline for Research & Citation Management
 
 A locally-hosted, privacy-focused RAG (Retrieval Augmented Generation) system designed to transform how researchers interact with their paper libraries during grant writing and academic writing. By combining advanced document processing (Docling), vector search (LanceDB), and AI assistance (Claude via MCP), this tool enables intelligent citation management, contextual paper retrieval, and automated bibliography generation for LaTeX documents.
 
@@ -25,7 +25,7 @@ A locally-hosted, privacy-focused RAG (Retrieval Augmented Generation) system de
 1. **Clone the repository**
    ```bash
    git clone <repository-url>
-   cd academic-rag-pipeline
+   cd paper-rag-pipeline
    ```
 
 2. **Install dependencies**
@@ -57,7 +57,7 @@ A locally-hosted, privacy-focused RAG (Retrieval Augmented Generation) system de
 ## Project Structure
 
 ```
-academic-rag-pipeline/
+paper-rag-pipeline/
 ├── src/                            # Source code
 │   ├── mcp_server.py              # MCP server implementation
 │   ├── document_processor.py      # Docling PDF processing pipeline

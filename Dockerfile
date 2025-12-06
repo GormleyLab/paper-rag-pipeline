@@ -1,4 +1,4 @@
-# Dockerfile for Academic RAG Pipeline - RunPod Serverless Deployment
+# Dockerfile for Paper RAG Pipeline - RunPod Serverless Deployment
 # GPU-enabled with CUDA support for accelerated PDF processing
 
 # Use RunPod's PyTorch base image with CUDA support

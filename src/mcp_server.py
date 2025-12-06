@@ -1,5 +1,5 @@
 """
-MCP Server for Academic RAG Pipeline.
+MCP Server for Paper RAG Pipeline.
 Provides tools for Claude Desktop to interact with the paper database.
 """
 

@@ -1,6 +1,6 @@
 # Quick Start Guide
 
-Get up and running with the Academic RAG Pipeline in 10 minutes!
+Get up and running with the Paper RAG Pipeline in 10 minutes!
 
 ## 1. Install Dependencies (2 min)
 
@@ -66,13 +66,13 @@ Add:
 ```json
 {
   "mcpServers": {
-    "academic-rag": {
-      "command": "/FULL/PATH/TO/academic-rag-pipeline/.venv/Scripts/python.exe",
-      "args": ["/FULL/PATH/TO/academic-rag-pipeline/src/mcp_server.py"],
+    "paper-rag": {
+      "command": "/FULL/PATH/TO/paper-rag-pipeline/.venv/Scripts/python.exe",
+      "args": ["/FULL/PATH/TO/paper-rag-pipeline/src/mcp_server.py"],
       "env": {
-        "PYTHONPATH": "/FULL/PATH/TO/academic-rag-pipeline",
+        "PYTHONPATH": "/FULL/PATH/TO/paper-rag-pipeline",
         "OPENAI_API_KEY": "sk-your-key-here",
-        "CONFIG_PATH": "/FULL/PATH/TO/academic-rag-pipeline/config/config.yaml"
+        "CONFIG_PATH": "/FULL/PATH/TO/paper-rag-pipeline/config/config.yaml"
       }
     }
   }
