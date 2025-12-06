@@ -22,14 +22,20 @@ from src.metadata_extractor import MetadataExtractor
 from src.embeddings import EmbeddingGenerator
 from src.vector_store import VectorStore
 from src.bibliography import BibliographyManager, BibliographyEntry
-from src.utils import setup_logger, compute_file_hash, compute_hash_from_bytes, save_bibtex_file, copy_pdf_to_database
+from src.utils import (
+    setup_logger,
+    compute_file_hash,
+    compute_hash_from_bytes,
+    save_bibtex_file,
+    copy_pdf_to_database,
+)
 
 
 # Set up logging - use stdout for container compatibility
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[logging.StreamHandler(sys.stdout)]
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    handlers=[logging.StreamHandler(sys.stdout)],
 )
 logger = logging.getLogger(__name__)
 
@@ -52,15 +58,19 @@ def load_config() -> dict:
     # Determine project root
     # In container: /app
     # Local: parent of src directory
-    if os.path.exists('/app/config'):
-        project_root = Path('/app')
+    if os.path.exists("/app/config"):
+        project_root = Path("/app")
     else:
         project_root = Path(__file__).parent.parent.resolve()
 
     # Get config path from environment or use default
     # RunPod uses config-runpod.yaml by default
-    default_config = 'config/config-runpod.yaml' if os.path.exists('/runpod-volume') else 'config/config.yaml'
-    config_path = os.getenv('CONFIG_PATH', default_config)
+    default_config = (
+        "config/config-runpod.yaml"
+        if os.path.exists("/runpod-volume")
+        else "config/config.yaml"
+    )
+    config_path = os.getenv("CONFIG_PATH", default_config)
     config_file = Path(config_path)
 
     # If config path is relative, resolve it from project root
@@ -71,19 +81,29 @@ def load_config() -> dict:
         logger.error(f"Config file not found: {config_file}")
         raise FileNotFoundError(f"Config file not found: {config_file}")
 
-    with open(config_file, 'r') as f:
+    with open(config_file, "r") as f:
         _config = yaml.safe_load(f)
 
     # Resolve relative paths in config to project root (only if not absolute)
-    for path_key in ['lancedb_path', 'pdf_library_path', 'default_bib_output', 'pdfs_path', 'bibs_output_path']:
+    for path_key in [
+        "lancedb_path",
+        "pdf_library_path",
+        "default_bib_output",
+        "pdfs_path",
+        "bibs_output_path",
+    ]:
         if path_key in _config and _config[path_key]:
             path_value = Path(_config[path_key])
             if not path_value.is_absolute():
                 _config[path_key] = str(project_root / path_value)
 
     # Override with environment variables
-    _config['openai_api_key'] = os.getenv('OPENAI_API_KEY', _config.get('openai_api_key', ''))
-    _config['crossref_email'] = os.getenv('CROSSREF_EMAIL', _config.get('crossref_email', ''))
+    _config["openai_api_key"] = os.getenv(
+        "OPENAI_API_KEY", _config.get("openai_api_key", "")
+    )
+    _config["crossref_email"] = os.getenv(
+        "CROSSREF_EMAIL", _config.get("crossref_email", "")
+    )
 
     logger.info(f"Configuration loaded successfully from {config_file}")
     logger.info(f"Project root: {project_root}")
@@ -93,49 +113,53 @@ def load_config() -> dict:
 
 def initialize_components():
     """Initialize all pipeline components."""
-    global _doc_processor, _metadata_extractor, _embedding_generator, _vector_store, _bibliography_manager
+    global \
+        _doc_processor, \
+        _metadata_extractor, \
+        _embedding_generator, \
+        _vector_store, \
+        _bibliography_manager
 
     cfg = load_config()
 
     # Initialize document processor
     if _doc_processor is None:
         _doc_processor = DocumentProcessor(
-            max_chunk_tokens=cfg.get('max_chunk_tokens', 1000),
-            chunk_overlap=cfg.get('chunk_overlap', 150),
-            embedding_model=cfg.get('embedding_model', 'text-embedding-3-large')
+            max_chunk_tokens=cfg.get("max_chunk_tokens", 1000),
+            chunk_overlap=cfg.get("chunk_overlap", 150),
+            embedding_model=cfg.get("embedding_model", "text-embedding-3-large"),
         )
         logger.info("Document processor initialized")
 
     # Initialize metadata extractor
     if _metadata_extractor is None:
         _metadata_extractor = MetadataExtractor(
-            crossref_email=cfg.get('crossref_email')
+            crossref_email=cfg.get("crossref_email")
         )
         logger.info("Metadata extractor initialized")
 
     # Initialize embedding generator
     if _embedding_generator is None:
-        api_key = cfg.get('openai_api_key')
+        api_key = cfg.get("openai_api_key")
         if not api_key:
             raise ValueError("OpenAI API key not found in config or environment")
 
         _embedding_generator = EmbeddingGenerator(
             api_key=api_key,
-            model=cfg.get('embedding_model', 'text-embedding-3-large'),
-            dimensions=cfg.get('vector_dimension', 3072),
-            batch_size=cfg.get('batch_size', 100)
+            model=cfg.get("embedding_model", "text-embedding-3-large"),
+            dimensions=cfg.get("vector_dimension", 3072),
+            batch_size=cfg.get("batch_size", 100),
         )
         logger.info("Embedding generator initialized")
 
     # Initialize vector store
     if _vector_store is None:
-        db_path = Path(cfg.get('lancedb_path', 'data/lancedb'))
+        db_path = Path(cfg.get("lancedb_path", "data/lancedb"))
         # Ensure directory exists
         db_path.parent.mkdir(parents=True, exist_ok=True)
 
         _vector_store = VectorStore(
-            db_path=db_path,
-            vector_dimension=cfg.get('vector_dimension', 3072)
+            db_path=db_path, vector_dimension=cfg.get("vector_dimension", 3072)
         )
         _vector_store.initialize_table()
         logger.info(f"Vector store initialized at {db_path}")
@@ -149,10 +173,7 @@ def initialize_components():
 
 
 # Create FastMCP server with stateless HTTP (required for serverless)
-mcp = FastMCP(
-    "academic-rag",
-    stateless_http=True
-)
+mcp = FastMCP("paper-rag", stateless_http=True)
 
 
 @mcp.tool()
@@ -161,7 +182,7 @@ async def search_papers(
     n_results: int = 5,
     filter_section: Optional[str] = None,
     min_year: Optional[int] = None,
-    output_format: str = "text"
+    output_format: str = "text",
 ) -> str:
     """
     Search the paper database for relevant content using semantic search.
@@ -188,7 +209,7 @@ async def search_papers(
         query_vector=query_embedding.embedding,
         n_results=n_results,
         filter_section=filter_section,
-        min_year=min_year
+        min_year=min_year,
     )
 
     # Handle no results
@@ -201,36 +222,38 @@ async def search_papers(
     if output_format == "json":
         json_results = []
         for result in results:
-            authors_list = [a.strip() for a in result['authors'].split(',') if a.strip()]
+            authors_list = [
+                a.strip() for a in result["authors"].split(",") if a.strip()
+            ]
             doi = None
-            if result.get('url') and 'doi.org/' in result['url']:
-                doi = result['url'].split('doi.org/')[-1]
+            if result.get("url") and "doi.org/" in result["url"]:
+                doi = result["url"].split("doi.org/")[-1]
 
-            json_results.append({
-                "title": result['title'],
-                "authors": authors_list,
-                "year": result['year'],
-                "journal": result.get('journal'),
-                "doi": doi,
-                "url": result.get('url'),
-                "bibtex_key": result['bibtex_key'],
-                "abstract": result.get('text', '')[:500],
-                "relevance_score": result.get('_distance', 0.5),
-                "section": result.get('section_title'),
-                "page": result.get('page_number')
-            })
+            json_results.append(
+                {
+                    "title": result["title"],
+                    "authors": authors_list,
+                    "year": result["year"],
+                    "journal": result.get("journal"),
+                    "doi": doi,
+                    "url": result.get("url"),
+                    "bibtex_key": result["bibtex_key"],
+                    "abstract": result.get("text", "")[:500],
+                    "relevance_score": result.get("_distance", 0.5),
+                    "section": result.get("section_title"),
+                    "page": result.get("page_number"),
+                }
+            )
 
-        return json.dumps({
-            "results": json_results,
-            "query": query,
-            "count": len(json_results)
-        })
+        return json.dumps(
+            {"results": json_results, "query": query, "count": len(json_results)}
+        )
 
     # Text format (default)
     output_lines = [f"Found {len(results)} relevant papers:\n"]
 
     for i, result in enumerate(results, 1):
-        authors_list = result['authors'].split(',')
+        authors_list = result["authors"].split(",")
         authors_str = ", ".join(authors_list[:3])
         if len(authors_list) > 3:
             authors_str += " et al."
@@ -238,10 +261,10 @@ async def search_papers(
         output_lines.append(f"**[{result['bibtex_key']}]** {result['title']}")
         output_lines.append(f"Authors: {authors_str} ({result['year']})")
 
-        if result['journal']:
+        if result["journal"]:
             output_lines.append(f"Journal: {result['journal']}")
 
-        if result['url']:
+        if result["url"]:
             output_lines.append(f"URL: {result['url']}")
 
         output_lines.append(
@@ -249,7 +272,7 @@ async def search_papers(
             f"Page {result['page_number'] or 'N/A'}):"
         )
 
-        output_lines.append(result['text'])
+        output_lines.append(result["text"])
         output_lines.append("\n---\n")
 
     return "\n".join(output_lines)
@@ -257,8 +280,7 @@ async def search_papers(
 
 @mcp.tool()
 async def add_paper_from_file(
-    file_path: str,
-    custom_tags: Optional[list[str]] = None
+    file_path: str, custom_tags: Optional[list[str]] = None
 ) -> str:
     """
     Add a PDF paper to the database from a file path.
@@ -295,9 +317,7 @@ async def add_paper_from_file(
     # Extract metadata
     existing_keys = _vector_store.get_all_bibtex_keys()
     metadata = _metadata_extractor.extract_metadata(
-        pdf_path,
-        first_pages_text=first_pages_text,
-        existing_keys=existing_keys
+        pdf_path, first_pages_text=first_pages_text, existing_keys=existing_keys
     )
 
     # Generate embeddings
@@ -307,14 +327,12 @@ async def add_paper_from_file(
 
     # Copy PDF to database storage
     cfg = load_config()
-    pdfs_dir = Path(cfg.get('pdfs_path', 'data/pdfs'))
+    pdfs_dir = Path(cfg.get("pdfs_path", "data/pdfs"))
     pdfs_dir.mkdir(parents=True, exist_ok=True)
 
     try:
         copied_pdf_path = copy_pdf_to_database(
-            source_pdf=pdf_path,
-            bibtex_key=metadata.bibtex_key,
-            output_dir=pdfs_dir
+            source_pdf=pdf_path, bibtex_key=metadata.bibtex_key, output_dir=pdfs_dir
         )
         logger.info(f"Copied PDF to database: {copied_pdf_path}")
         pdf_copied = True
@@ -330,18 +348,18 @@ async def add_paper_from_file(
         embeddings=embeddings,
         pdf_path=copied_pdf_path,
         pdf_hash=pdf_hash,
-        tags=custom_tags
+        tags=custom_tags,
     )
 
     # Save individual BibTeX file
-    bibs_dir = Path(cfg.get('bibs_output_path', 'data/bibs'))
+    bibs_dir = Path(cfg.get("bibs_output_path", "data/bibs"))
     bibs_dir.mkdir(parents=True, exist_ok=True)
 
     try:
         bib_file_path = save_bibtex_file(
             bibtex_entry=metadata.bibtex_entry,
             bibtex_key=metadata.bibtex_key,
-            output_dir=bibs_dir
+            output_dir=bibs_dir,
         )
         logger.info(f"Saved BibTeX file: {bib_file_path}")
         bib_saved = True
@@ -356,18 +374,18 @@ async def add_paper_from_file(
 Successfully added paper to database!
 
 **Title:** {metadata.title}
-**Authors:** {', '.join(metadata.authors)}
+**Authors:** {", ".join(metadata.authors)}
 **Year:** {metadata.year}
 **BibTeX Key:** {metadata.bibtex_key}
-**DOI:** {metadata.doi or 'N/A'}
-**URL:** {metadata.url or 'N/A'}
+**DOI:** {metadata.doi or "N/A"}
+**URL:** {metadata.url or "N/A"}
 **Extraction Method:** {metadata.extraction_method.value}
 
 **Indexed:** {num_chunks} chunks
-**Tokens Processed:** {stats['total_tokens']}
-**Estimated Cost:** ${stats['estimated_cost_usd']:.4f}
-{'**PDF File:** Copied to ' + str(pdfs_dir / (metadata.bibtex_key + '.pdf')) if pdf_copied else '**PDF File:** Failed to copy (using original path)'}
-{'**BibTeX File:** Saved to ' + str(bibs_dir / (metadata.bibtex_key + '.bib')) if bib_saved else '**BibTeX File:** Failed to save'}
+**Tokens Processed:** {stats["total_tokens"]}
+**Estimated Cost:** ${stats["estimated_cost_usd"]:.4f}
+{"**PDF File:** Copied to " + str(pdfs_dir / (metadata.bibtex_key + ".pdf")) if pdf_copied else "**PDF File:** Failed to copy (using original path)"}
+{"**BibTeX File:** Saved to " + str(bibs_dir / (metadata.bibtex_key + ".bib")) if bib_saved else "**BibTeX File:** Failed to save"}
 
 The paper is now searchable in your database.
 """
@@ -377,9 +395,7 @@ The paper is now searchable in your database.
 
 @mcp.tool()
 async def add_paper_from_upload(
-    pdf_data: str,
-    filename: str,
-    custom_tags: Optional[list[str]] = None
+    pdf_data: str, filename: str, custom_tags: Optional[list[str]] = None
 ) -> str:
     """
     Add a PDF paper to the database from base64-encoded data.
@@ -411,7 +427,7 @@ async def add_paper_from_upload(
         return f"Error: Invalid base64 data - {str(e)}"
 
     # Step 2: Validate PDF magic bytes
-    if not pdf_bytes.startswith(b'%PDF'):
+    if not pdf_bytes.startswith(b"%PDF"):
         return "Error: Invalid PDF file - data does not start with PDF magic bytes"
 
     # Step 3: Compute hash for duplicate detection (before writing to disk)
@@ -425,9 +441,9 @@ async def add_paper_from_upload(
     try:
         # Create temp file with .pdf suffix (important for some processors)
         with tempfile.NamedTemporaryFile(
-            mode='wb',
-            suffix='.pdf',
-            delete=False  # We manage deletion manually for proper cleanup
+            mode="wb",
+            suffix=".pdf",
+            delete=False,  # We manage deletion manually for proper cleanup
         ) as temp_file:
             temp_file.write(pdf_bytes)
             temp_path = Path(temp_file.name)
@@ -443,9 +459,7 @@ async def add_paper_from_upload(
         # Step 7: Extract metadata
         existing_keys = _vector_store.get_all_bibtex_keys()
         metadata = _metadata_extractor.extract_metadata(
-            temp_path,
-            first_pages_text=first_pages_text,
-            existing_keys=existing_keys
+            temp_path, first_pages_text=first_pages_text, existing_keys=existing_keys
         )
 
         # Step 8: Generate embeddings
@@ -455,14 +469,14 @@ async def add_paper_from_upload(
 
         # Step 9: Copy PDF to permanent storage
         cfg = load_config()
-        pdfs_dir = Path(cfg.get('pdfs_path', 'data/pdfs'))
+        pdfs_dir = Path(cfg.get("pdfs_path", "data/pdfs"))
         pdfs_dir.mkdir(parents=True, exist_ok=True)
 
         try:
             copied_pdf_path = copy_pdf_to_database(
                 source_pdf=temp_path,
                 bibtex_key=metadata.bibtex_key,
-                output_dir=pdfs_dir
+                output_dir=pdfs_dir,
             )
             logger.info(f"Copied PDF to database: {copied_pdf_path}")
             pdf_copied = True
@@ -478,18 +492,18 @@ async def add_paper_from_upload(
             embeddings=embeddings,
             pdf_path=copied_pdf_path,
             pdf_hash=pdf_hash,
-            tags=custom_tags
+            tags=custom_tags,
         )
 
         # Step 11: Save individual BibTeX file
-        bibs_dir = Path(cfg.get('bibs_output_path', 'data/bibs'))
+        bibs_dir = Path(cfg.get("bibs_output_path", "data/bibs"))
         bibs_dir.mkdir(parents=True, exist_ok=True)
 
         try:
             bib_file_path = save_bibtex_file(
                 bibtex_entry=metadata.bibtex_entry,
                 bibtex_key=metadata.bibtex_key,
-                output_dir=bibs_dir
+                output_dir=bibs_dir,
             )
             logger.info(f"Saved BibTeX file: {bib_file_path}")
             bib_saved = True
@@ -504,19 +518,19 @@ async def add_paper_from_upload(
 Successfully added paper to database!
 
 **Title:** {metadata.title}
-**Authors:** {', '.join(metadata.authors)}
+**Authors:** {", ".join(metadata.authors)}
 **Year:** {metadata.year}
 **BibTeX Key:** {metadata.bibtex_key}
-**DOI:** {metadata.doi or 'N/A'}
-**URL:** {metadata.url or 'N/A'}
+**DOI:** {metadata.doi or "N/A"}
+**URL:** {metadata.url or "N/A"}
 **Extraction Method:** {metadata.extraction_method.value}
 **Original Filename:** {filename}
 
 **Indexed:** {num_chunks} chunks
-**Tokens Processed:** {stats['total_tokens']}
-**Estimated Cost:** ${stats['estimated_cost_usd']:.4f}
-{'**PDF File:** Saved to ' + str(pdfs_dir / (metadata.bibtex_key + '.pdf')) if pdf_copied else '**PDF File:** Failed to save'}
-{'**BibTeX File:** Saved to ' + str(bibs_dir / (metadata.bibtex_key + '.bib')) if bib_saved else '**BibTeX File:** Failed to save'}
+**Tokens Processed:** {stats["total_tokens"]}
+**Estimated Cost:** ${stats["estimated_cost_usd"]:.4f}
+{"**PDF File:** Saved to " + str(pdfs_dir / (metadata.bibtex_key + ".pdf")) if pdf_copied else "**PDF File:** Failed to save"}
+{"**BibTeX File:** Saved to " + str(bibs_dir / (metadata.bibtex_key + ".bib")) if bib_saved else "**BibTeX File:** Failed to save"}
 
 The paper is now searchable in your database.
 """
@@ -539,8 +553,7 @@ The paper is now searchable in your database.
 
 @mcp.tool()
 async def add_papers_from_folder_upload(
-    pdf_files: list[dict],
-    custom_tags: Optional[list[str]] = None
+    pdf_files: list[dict], custom_tags: Optional[list[str]] = None
 ) -> str:
     """
     Add multiple PDF papers to the database from base64-encoded data.
@@ -570,22 +583,22 @@ async def add_papers_from_folder_upload(
     total_cost = 0.0
 
     successful_papers = []  # List of (bibtex_key, title)
-    skipped_papers = []     # List of (filename, reason)
-    failed_papers = []      # List of (filename, error_message)
+    skipped_papers = []  # List of (filename, reason)
+    failed_papers = []  # List of (filename, error_message)
 
     # Get existing BibTeX keys once for collision detection across batch
     existing_keys = _vector_store.get_all_bibtex_keys()
 
     # Get config for output paths
     cfg = load_config()
-    pdfs_dir = Path(cfg.get('pdfs_path', 'data/pdfs'))
-    bibs_dir = Path(cfg.get('bibs_output_path', 'data/bibs'))
+    pdfs_dir = Path(cfg.get("pdfs_path", "data/pdfs"))
+    bibs_dir = Path(cfg.get("bibs_output_path", "data/bibs"))
     pdfs_dir.mkdir(parents=True, exist_ok=True)
     bibs_dir.mkdir(parents=True, exist_ok=True)
 
     for pdf_item in pdf_files:
-        filename = pdf_item.get('filename', 'unknown.pdf')
-        pdf_data = pdf_item.get('pdf_data', '')
+        filename = pdf_item.get("filename", "unknown.pdf")
+        pdf_data = pdf_item.get("pdf_data", "")
         temp_path = None
 
         try:
@@ -599,7 +612,7 @@ async def add_papers_from_folder_upload(
                 continue
 
             # Step 2: Validate PDF magic bytes
-            if not pdf_bytes.startswith(b'%PDF'):
+            if not pdf_bytes.startswith(b"%PDF"):
                 logger.warning(f"Invalid PDF magic bytes for {filename}")
                 failed_papers.append((filename, "Invalid PDF file - not a valid PDF"))
                 failed += 1
@@ -616,9 +629,7 @@ async def add_papers_from_folder_upload(
 
             # Step 4: Write to temporary file
             with tempfile.NamedTemporaryFile(
-                mode='wb',
-                suffix='.pdf',
-                delete=False
+                mode="wb", suffix=".pdf", delete=False
             ) as temp_file:
                 temp_file.write(pdf_bytes)
                 temp_path = Path(temp_file.name)
@@ -635,7 +646,7 @@ async def add_papers_from_folder_upload(
             metadata = _metadata_extractor.extract_metadata(
                 temp_path,
                 first_pages_text=first_pages_text,
-                existing_keys=existing_keys
+                existing_keys=existing_keys,
             )
 
             # Add new key to existing_keys to prevent collisions within batch
@@ -643,19 +654,21 @@ async def add_papers_from_folder_upload(
 
             # Step 8: Generate embeddings
             chunk_texts = [chunk.text for chunk in chunks]
-            embedding_results = _embedding_generator.generate_embeddings_batch(chunk_texts)
+            embedding_results = _embedding_generator.generate_embeddings_batch(
+                chunk_texts
+            )
             embeddings = [result.embedding for result in embedding_results]
 
             # Track cost
             stats = _embedding_generator.get_embedding_stats(embedding_results)
-            total_cost += stats['estimated_cost_usd']
+            total_cost += stats["estimated_cost_usd"]
 
             # Step 9: Copy PDF to permanent storage
             try:
                 copied_pdf_path = copy_pdf_to_database(
                     source_pdf=temp_path,
                     bibtex_key=metadata.bibtex_key,
-                    output_dir=pdfs_dir
+                    output_dir=pdfs_dir,
                 )
             except Exception as e:
                 logger.warning(f"Failed to copy PDF for {filename}: {e}")
@@ -668,7 +681,7 @@ async def add_papers_from_folder_upload(
                 embeddings=embeddings,
                 pdf_path=copied_pdf_path,
                 pdf_hash=pdf_hash,
-                tags=custom_tags
+                tags=custom_tags,
             )
 
             # Step 11: Save individual BibTeX file
@@ -676,7 +689,7 @@ async def add_papers_from_folder_upload(
                 save_bibtex_file(
                     bibtex_entry=metadata.bibtex_entry,
                     bibtex_key=metadata.bibtex_key,
-                    output_dir=bibs_dir
+                    output_dir=bibs_dir,
                 )
             except Exception as e:
                 logger.warning(f"Failed to save BibTeX file for {filename}: {e}")
@@ -684,7 +697,9 @@ async def add_papers_from_folder_upload(
             # Track success
             successful_papers.append((metadata.bibtex_key, metadata.title))
             processed += 1
-            logger.info(f"Successfully processed: {filename} -> [{metadata.bibtex_key}]")
+            logger.info(
+                f"Successfully processed: {filename} -> [{metadata.bibtex_key}]"
+            )
 
         except Exception as e:
             logger.error(f"Failed to process {filename}: {e}", exc_info=True)
@@ -713,7 +728,7 @@ async def add_papers_from_folder_upload(
         for i, (key, title) in enumerate(successful_papers, 1):
             # Truncate long titles
             display_title = title[:60] + "..." if len(title) > 60 else title
-            output_lines.append(f"{i}. [{key}] \"{display_title}\"")
+            output_lines.append(f'{i}. [{key}] "{display_title}"')
         output_lines.append("")
 
     if skipped_papers:
@@ -736,7 +751,7 @@ async def add_papers_from_folder_upload(
 async def generate_bibliography(
     bibtex_keys: list[str],
     output_path: str = "./references.bib",
-    include_abstracts: bool = False
+    include_abstracts: bool = False,
 ) -> str:
     """
     Create a .bib file with specified papers.
@@ -761,11 +776,11 @@ async def generate_bibliography(
         paper = _vector_store.get_paper_by_key(key)
         if paper:
             entry = BibliographyEntry(
-                bibtex_key=paper['bibtex_key'],
-                bibtex_entry=paper['bibtex_entry'],
-                title=paper['title'],
-                authors=paper['authors'],
-                year=paper['year']
+                bibtex_key=paper["bibtex_key"],
+                bibtex_entry=paper["bibtex_entry"],
+                title=paper["title"],
+                authors=paper["authors"],
+                year=paper["year"],
             )
             entries.append(entry)
         else:
@@ -775,18 +790,18 @@ async def generate_bibliography(
     result = _bibliography_manager.generate_bibliography_file(
         entries=entries,
         output_path=Path(output_path),
-        include_abstracts=include_abstracts
+        include_abstracts=include_abstracts,
     )
 
     output_lines = [
         f"Bibliography generated: {output_path}",
-        f"\nIncluded: {result['success_count']} entries"
+        f"\nIncluded: {result['success_count']} entries",
     ]
 
     if missing_keys:
         output_lines.append(f"\nMissing keys: {', '.join(missing_keys)}")
 
-    if result['errors']:
+    if result["errors"]:
         output_lines.append(f"\nErrors: {', '.join(result['errors'])}")
 
     return "\n".join(output_lines)
@@ -813,31 +828,31 @@ async def get_paper_details(bibtex_key: str) -> str:
         return f"Paper not found: {bibtex_key}"
 
     # Get chunk count
-    paper_id = paper['pdf_hash'][:16]
+    paper_id = paper["pdf_hash"][:16]
     chunks = _vector_store.get_paper_chunks(paper_id)
 
     output = f"""
 **Paper Details**
 
-**Title:** {paper['title']}
-**Authors:** {', '.join(paper['authors'])}
-**Year:** {paper['year']}
-**BibTeX Key:** {paper['bibtex_key']}
+**Title:** {paper["title"]}
+**Authors:** {", ".join(paper["authors"])}
+**Year:** {paper["year"]}
+**BibTeX Key:** {paper["bibtex_key"]}
 
 **Publication Info:**
-- Journal: {paper['journal'] or 'N/A'}
-- DOI: {paper['doi'] or 'N/A'}
-- URL: {paper['url'] or 'N/A'}
+- Journal: {paper["journal"] or "N/A"}
+- DOI: {paper["doi"] or "N/A"}
+- URL: {paper["url"] or "N/A"}
 
 **Database Info:**
 - Chunks Indexed: {len(chunks)}
-- Date Added: {paper['date_added']}
-- Extraction Method: {paper['extraction_method']}
-- PDF Path: {paper['pdf_path']}
+- Date Added: {paper["date_added"]}
+- Extraction Method: {paper["extraction_method"]}
+- PDF Path: {paper["pdf_path"]}
 
 **BibTeX Entry:**
 ```bibtex
-{paper['bibtex_entry']}
+{paper["bibtex_entry"]}
 ```
 """
 
@@ -861,15 +876,15 @@ async def database_stats() -> str:
     output = f"""
 **Database Statistics**
 
-**Papers:** {stats['total_papers']}
-**Chunks:** {stats['total_chunks']}
-**Average Publication Year:** {stats['average_year']}
+**Papers:** {stats["total_papers"]}
+**Chunks:** {stats["total_chunks"]}
+**Average Publication Year:** {stats["average_year"]}
 
 **Papers by Year:**
 """
 
     # Sort years
-    sorted_years = sorted(stats['year_distribution'].items(), reverse=True)
+    sorted_years = sorted(stats["year_distribution"].items(), reverse=True)
     for year, count in sorted_years[:10]:
         output += f"\n  {year}: {count} papers"
 
@@ -904,13 +919,11 @@ async def list_recent_papers(n: int = 10) -> str:
     output_lines = [f"**Recently Added Papers** (showing {len(papers)}):\n"]
 
     for i, paper in enumerate(papers, 1):
-        authors_str = ", ".join(paper['authors'][:2])
-        if len(paper['authors']) > 2:
+        authors_str = ", ".join(paper["authors"][:2])
+        if len(paper["authors"]) > 2:
             authors_str += " et al."
 
-        output_lines.append(
-            f"{i}. **[{paper['bibtex_key']}]** {paper['title']}"
-        )
+        output_lines.append(f"{i}. **[{paper['bibtex_key']}]** {paper['title']}")
         output_lines.append(f"   {authors_str} ({paper['year']})")
         output_lines.append(f"   Added: {paper['date_added'][:10]}\n")
 
@@ -918,10 +931,7 @@ async def list_recent_papers(n: int = 10) -> str:
 
 
 @mcp.tool()
-async def delete_paper(
-    bibtex_key: str,
-    delete_files: bool = True
-) -> str:
+async def delete_paper(bibtex_key: str, delete_files: bool = True) -> str:
     """
     Delete a paper from the database and optionally remove associated files.
 
@@ -954,7 +964,7 @@ async def delete_paper(
         f"Successfully deleted paper from database: {bibtex_key}",
         f"- Title: {paper['title']}",
         f"- Authors: {', '.join(paper['authors'])}",
-        f"- Deleted {deleted_count} chunks"
+        f"- Deleted {deleted_count} chunks",
     ]
 
     # Delete associated files if requested
@@ -964,7 +974,7 @@ async def delete_paper(
         files_not_found = []
 
         # Delete PDF file
-        pdfs_dir = Path(cfg.get('pdfs_path', 'data/pdfs'))
+        pdfs_dir = Path(cfg.get("pdfs_path", "data/pdfs"))
         pdf_path = pdfs_dir / f"{bibtex_key}.pdf"
 
         if pdf_path.exists():
@@ -979,7 +989,7 @@ async def delete_paper(
             files_not_found.append(f"PDF: {pdf_path}")
 
         # Delete BibTeX file
-        bibs_dir = Path(cfg.get('bibs_output_path', 'data/bibs'))
+        bibs_dir = Path(cfg.get("bibs_output_path", "data/bibs"))
         bib_path = bibs_dir / f"{bibtex_key}.bib"
 
         if bib_path.exists():
@@ -999,11 +1009,15 @@ async def delete_paper(
                 output_lines.append(f"  - {file_desc}")
 
         if files_not_found:
-            output_lines.append(f"\nFiles not found (already deleted or never created):")
+            output_lines.append(
+                f"\nFiles not found (already deleted or never created):"
+            )
             for file_desc in files_not_found:
                 output_lines.append(f"  - {file_desc}")
     else:
-        output_lines.append("\n- Associated files were not deleted (delete_files=False)")
+        output_lines.append(
+            "\n- Associated files were not deleted (delete_files=False)"
+        )
 
     return "\n".join(output_lines)
 

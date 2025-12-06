@@ -27,8 +27,9 @@ This deployment provides:
 ```bash
 cd /path/to/academic-rag-pipeline
 
-# Build the GPU-enabled image
-docker build -t your-dockerhub-username/academic-rag:latest .
+# Build the GPU-enabled image for AMD64 platform (required for RunPod)
+# Use --platform flag when building on ARM Macs to avoid platform mismatch warnings
+docker build --platform linux/amd64 -t your-dockerhub-username/academic-rag:latest .
 
 # Test locally (optional)
 docker run --rm -it \
@@ -487,8 +488,8 @@ curl "https://api.runpod.ai/v2/YOUR_ENDPOINT_ID/health" \
 ### Update Docker Image
 
 ```bash
-# Build new version
-docker build -t your-dockerhub-username/academic-rag:v2 .
+# Build new version (use --platform for ARM Macs)
+docker build --platform linux/amd64 -t your-dockerhub-username/academic-rag:v2 .
 docker push your-dockerhub-username/academic-rag:v2
 
 # Update endpoint in RunPod Console
