@@ -1,6 +1,6 @@
 """
 Authentication middleware for MCP HTTP Server.
-Implements Bearer token authentication and OAuth 2.0 Client Credentials flow.
+Implements Bearer token authentication for API access.
 """
 
 import os
@@ -15,15 +15,19 @@ logger = logging.getLogger(__name__)
 class BearerAuthMiddleware(BaseHTTPMiddleware):
     """
     Middleware that validates Bearer token authentication.
-    Also supports OAuth 2.0 Client Credentials flow for Claude Desktop custom connector.
 
     Requires MCP_API_KEY environment variable to be set.
-    Optionally supports MCP_CLIENT_ID for OAuth (defaults to "paper-rag-client").
-    Skips authentication for health check endpoints and OAuth token endpoint.
+    Skips authentication for health check endpoints.
     """
 
-    # Paths that don't require authentication
-    EXEMPT_PATHS = {"/health", "/healthz", "/ready", "/", "/oauth/token"}
+    # Paths that don't require authentication (health checks only)
+    EXEMPT_PATHS = {
+        "/health",
+        "/healthz",
+        "/ready",
+        "/",
+        "/ping",  # RunPod load-balanced health check
+    }
 
     async def dispatch(self, request: Request, call_next):
         """Process request and validate authentication."""
@@ -47,12 +51,15 @@ class BearerAuthMiddleware(BaseHTTPMiddleware):
         # Get Authorization header
         auth_header = request.headers.get("Authorization", "")
 
+        # WWW-Authenticate header for 401 responses
+        www_authenticate = 'Bearer realm="paper-rag"'
+
         if not auth_header:
             logger.warning(f"Missing Authorization header for {request.url.path}")
             return JSONResponse(
                 {"error": "Missing Authorization header", "detail": "Bearer token required"},
                 status_code=401,
-                headers={"WWW-Authenticate": "Bearer"}
+                headers={"WWW-Authenticate": www_authenticate},
             )
 
         # Validate Bearer token format
@@ -61,7 +68,7 @@ class BearerAuthMiddleware(BaseHTTPMiddleware):
             return JSONResponse(
                 {"error": "Invalid Authorization format", "detail": "Use 'Bearer <token>'"},
                 status_code=401,
-                headers={"WWW-Authenticate": "Bearer"}
+                headers={"WWW-Authenticate": www_authenticate},
             )
 
         # Extract and validate token
@@ -72,7 +79,7 @@ class BearerAuthMiddleware(BaseHTTPMiddleware):
             return JSONResponse(
                 {"error": "Invalid API key", "detail": "Authentication failed"},
                 status_code=401,
-                headers={"WWW-Authenticate": "Bearer"}
+                headers={"WWW-Authenticate": www_authenticate},
             )
 
         # Authentication successful

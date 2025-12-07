@@ -80,26 +80,99 @@ The server will automatically create this directory structure:
 
 ## Step 3: Create Serverless Endpoint
 
+RunPod offers two endpoint types. Choose based on your needs:
+
+| Type | Best For | URL Format | Custom Paths |
+|------|----------|------------|--------------|
+| **Load-Balanced** | Web interface, direct API | `https://ENDPOINT_ID.api.runpod.ai` | Yes (all paths) |
+| **Queue-Based** | mcp-remote, batch jobs | `https://api.runpod.ai/v2/ENDPOINT_ID` | No (fixed paths only) |
+
+### Option A: Load-Balanced Endpoint (Recommended)
+
+Use this for the web interface or direct API access with Bearer token authentication.
+
 1. Go to [RunPod Console](https://www.runpod.io/console/serverless)
 2. Click **New Endpoint**
-3. Configure:
+3. Select **Load Balanced** endpoint type
+4. Configure:
 
-### Basic Settings
+#### Basic Settings
 
 | Setting | Value |
 |---------|-------|
 | **Endpoint Name** | `paper-rag-mcp` |
 | **Container Image** | `your-dockerhub-username/paper-rag:latest` |
-| **Container Start Command** | Leave empty (uses Dockerfile CMD) |
+| **Container Start Command** | Leave empty |
 
-### GPU Configuration
+#### Container Configuration
+
+| Setting | Value |
+|---------|-------|
+| **Container Disk** | 5 GB |
+| **Expose HTTP ports** | `8080` |
+| **Expose TCP ports** | Leave empty |
+
+#### GPU Configuration
 
 | Setting | Value |
 |---------|-------|
 | **GPU Type** | RTX 3090 (24GB) or RTX 4090 (24GB) |
 | **GPU Count** | 1 |
 
-### Scaling Configuration
+#### Scaling Configuration
+
+| Setting | Value | Notes |
+|---------|-------|-------|
+| **Min Workers** | 0 | Scale to zero when idle |
+| **Max Workers** | 3 | Adjust based on expected load |
+| **Idle Timeout** | 60 seconds | Time before scaling down |
+
+#### Environment Variables
+
+| Variable | Value | Required |
+|----------|-------|----------|
+| `OPENAI_API_KEY` | `sk-your-openai-key` | Yes |
+| `MCP_API_KEY` | `your-secret-api-key` | Yes |
+| `CROSSREF_EMAIL` | `your.email@example.com` | Recommended |
+| `START_HTTP_SERVER` | `true` | Yes |
+
+#### Network Volume
+
+1. Expand **Advanced** section
+2. Under **Network Volume**, select `paper-rag-data`
+3. Mount path: `/runpod-volume`
+
+#### After Creation
+
+Your endpoint URL will be: `https://ENDPOINT_ID.api.runpod.ai`
+
+---
+
+### Option B: Queue-Based Endpoint (For mcp-remote)
+
+Use this with the `mcp-remote` npm package.
+
+1. Go to [RunPod Console](https://www.runpod.io/console/serverless)
+2. Click **New Endpoint**
+3. Select **Queue** endpoint type (default)
+4. Configure:
+
+#### Basic Settings
+
+| Setting | Value |
+|---------|-------|
+| **Endpoint Name** | `paper-rag-mcp` |
+| **Container Image** | `your-dockerhub-username/paper-rag:latest` |
+| **Container Start Command** | Leave empty |
+
+#### GPU Configuration
+
+| Setting | Value |
+|---------|-------|
+| **GPU Type** | RTX 3090 (24GB) or RTX 4090 (24GB) |
+| **GPU Count** | 1 |
+
+#### Scaling Configuration
 
 | Setting | Value | Notes |
 |---------|-------|-------|
@@ -108,9 +181,7 @@ The server will automatically create this directory structure:
 | **Idle Timeout** | 60 seconds | Time before scaling down |
 | **FlashBoot** | Enabled | Faster cold starts |
 
-### Environment Variables
-
-Click **Add Environment Variable** for each:
+#### Environment Variables
 
 | Variable | Value | Required |
 |----------|-------|----------|
@@ -118,22 +189,18 @@ Click **Add Environment Variable** for each:
 | `MCP_API_KEY` | `your-secret-api-key` | Yes |
 | `CROSSREF_EMAIL` | `your.email@example.com` | Recommended |
 | `START_HTTP_SERVER` | `true` | Yes |
-| `CONFIG_PATH` | `/app/config/config-runpod.yaml` | No (default) |
-| `MCP_CLIENT_ID` | `paper-rag-client` | No (defaults to `paper-rag-client`) |
 
-> **Security Note**: Use RunPod's **Secrets** feature for sensitive values like API keys.
->
-> **OAuth Note**: `MCP_CLIENT_ID` is used for OAuth 2.0 authentication with Claude Desktop's custom connector UI. If not set, it defaults to `paper-rag-client`. The `MCP_API_KEY` serves as both the OAuth client secret and the access token.
-
-### Network Volume
+#### Network Volume
 
 1. Expand **Advanced** section
 2. Under **Network Volume**, select `paper-rag-data`
 3. Mount path: `/runpod-volume`
 
-### Create Endpoint
+#### After Creation
 
-Click **Create Endpoint** and wait for deployment.
+Your endpoint URL will be: `https://api.runpod.ai/v2/ENDPOINT_ID`
+
+> **Note**: Queue-based endpoints only support fixed paths (`/run`, `/runsync`, `/health`, etc.). Custom paths like `/mcp` are not accessible.
 
 ---
 
@@ -143,38 +210,21 @@ After deployment:
 
 1. Go to your endpoint dashboard
 2. Find the **Endpoint ID** (e.g., `abc123xyz`)
-3. Your endpoint URL will be: `https://api.runpod.ai/v2/abc123xyz`
+3. Your endpoint URL depends on the endpoint type:
+   - **Load-Balanced**: `https://abc123xyz.api.runpod.ai`
+   - **Queue-Based**: `https://api.runpod.ai/v2/abc123xyz`
 
 ---
 
 ## Step 5: Configure Claude Desktop
 
-You have two options to connect Claude Desktop to your remote MCP server:
+Use `mcp-remote` to connect Claude Desktop to the RunPod endpoint.
 
-### Option 1: Custom Connector UI (Recommended)
-
-This method uses Claude Desktop's built-in custom connector UI with OAuth 2.0 authentication.
-
-1. **In Claude Desktop**, go to **Settings → Connectors → Add custom connector**
-2. **Enter the following:**
-   - **Name**: `paper-rag-remote`
-   - **URL**: `https://api.runpod.ai/v2/YOUR_ENDPOINT_ID/mcp`
-   - **OAuth Client ID**: `paper-rag-client` (or your custom `MCP_CLIENT_ID` if set)
-   - **OAuth Client Secret**: Your `MCP_API_KEY` value
-
-3. **Click "Add"**
-
-Claude Desktop will automatically handle the OAuth 2.0 flow to authenticate and connect to your server.
-
-**Note:** If you set a custom `MCP_CLIENT_ID` environment variable in RunPod, use that value instead of `paper-rag-client`.
-
-### Option 2: JSON Config File (Alternative)
+### mcp-remote Configuration
 
 This method uses `mcp-remote` as a bridge and requires editing the config file directly.
 
 #### Install mcp-remote
-
-Claude Desktop needs `mcp-remote` to connect to remote MCP servers:
 
 ```bash
 npm install -g mcp-remote
@@ -187,8 +237,7 @@ Edit the Claude Desktop configuration file:
 - **macOS**: `~/Library/Application Support/Claude/claude_desktop_config.json`
 - **Windows**: `%APPDATA%\Claude\claude_desktop_config.json`
 
-Add the following configuration:
-
+**For Queue-Based Endpoint:**
 ```json
 {
   "mcpServers": {
@@ -196,7 +245,24 @@ Add the following configuration:
       "command": "npx",
       "args": [
         "mcp-remote",
-        "https://api.runpod.ai/v2/YOUR_ENDPOINT_ID/mcp",
+        "https://api.runpod.ai/v2/YOUR_ENDPOINT_ID/runsync",
+        "--header",
+        "Authorization: Bearer YOUR_RUNPOD_API_KEY"
+      ]
+    }
+  }
+}
+```
+
+**For Load-Balanced Endpoint:**
+```json
+{
+  "mcpServers": {
+    "paper-rag-remote": {
+      "command": "npx",
+      "args": [
+        "mcp-remote",
+        "https://YOUR_ENDPOINT_ID.api.runpod.ai/mcp",
         "--header",
         "Authorization: Bearer YOUR_MCP_API_KEY"
       ]
@@ -204,10 +270,6 @@ Add the following configuration:
   }
 }
 ```
-
-**Replace:**
-- `YOUR_ENDPOINT_ID` with your actual RunPod endpoint ID
-- `YOUR_MCP_API_KEY` with the API key you set in environment variables
 
 #### Restart Claude Desktop
 
@@ -540,11 +602,25 @@ docker push your-dockerhub-username/paper-rag:v2
 
 ## Quick Reference
 
+### Load-Balanced Endpoint
+
+| Item | Value |
+|------|-------|
+| **Docker Image** | `your-dockerhub-username/paper-rag:latest` |
+| **Endpoint URL** | `https://ENDPOINT_ID.api.runpod.ai` |
+| **MCP Endpoint** | `https://ENDPOINT_ID.api.runpod.ai/mcp` |
+| **Health Check** | `https://ENDPOINT_ID.api.runpod.ai/ping` |
+| **Config File** | `/app/config/config-runpod.yaml` |
+| **Data Path** | `/runpod-volume/data/` |
+| **GPU** | RTX 3090 or RTX 4090 |
+
+### Queue-Based Endpoint
+
 | Item | Value |
 |------|-------|
 | **Docker Image** | `your-dockerhub-username/paper-rag:latest` |
 | **Endpoint URL** | `https://api.runpod.ai/v2/ENDPOINT_ID` |
-| **MCP Endpoint** | `https://api.runpod.ai/v2/ENDPOINT_ID/mcp` |
+| **Run Sync** | `https://api.runpod.ai/v2/ENDPOINT_ID/runsync` |
 | **Health Check** | `https://api.runpod.ai/v2/ENDPOINT_ID/health` |
 | **Config File** | `/app/config/config-runpod.yaml` |
 | **Data Path** | `/runpod-volume/data/` |

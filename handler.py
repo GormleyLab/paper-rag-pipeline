@@ -17,8 +17,8 @@ from pathlib import Path
 # Configure logging for RunPod
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[logging.StreamHandler(sys.stdout)]
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    handlers=[logging.StreamHandler(sys.stdout)],
 )
 logger = logging.getLogger("runpod-handler")
 
@@ -29,6 +29,7 @@ logger.info("Pre-loading components...")
 try:
     # Pre-load Docling (heavy import)
     from docling.document_converter import DocumentConverter
+
     logger.info("Docling loaded")
 except Exception as e:
     logger.warning(f"Failed to pre-load Docling: {e}")
@@ -36,6 +37,7 @@ except Exception as e:
 try:
     # Pre-load transformers tokenizer
     import tiktoken
+
     tiktoken.get_encoding("cl100k_base")
     logger.info("Tokenizer loaded")
 except Exception as e:
@@ -44,6 +46,7 @@ except Exception as e:
 try:
     # Pre-load LanceDB
     import lancedb
+
     logger.info("LanceDB loaded")
 except Exception as e:
     logger.warning(f"Failed to pre-load LanceDB: {e}")
@@ -53,13 +56,13 @@ logger.info("Pre-loading complete")
 
 def ensure_directories():
     """Ensure all required directories exist on the network volume."""
-    if os.path.exists('/runpod-volume'):
+    if os.path.exists("/runpod-volume"):
         dirs = [
-            '/runpod-volume/data/lancedb',
-            '/runpod-volume/data/pdfs',
-            '/runpod-volume/data/bibs',
-            '/runpod-volume/data/logs',
-            '/runpod-volume/cache/huggingface',
+            "/runpod-volume/data/lancedb",
+            "/runpod-volume/data/pdfs",
+            "/runpod-volume/data/bibs",
+            "/runpod-volume/data/logs",
+            "/runpod-volume/cache/huggingface",
         ]
         for dir_path in dirs:
             Path(dir_path).mkdir(parents=True, exist_ok=True)
@@ -76,8 +79,9 @@ def run_http_server():
     ensure_directories()
 
     # Get configuration
+    # RunPod load-balanced endpoints set PORT env var
     host = os.environ.get("SERVER_HOST", "0.0.0.0")
-    port = int(os.environ.get("SERVER_PORT", "8080"))
+    port = int(os.environ.get("PORT", os.environ.get("SERVER_PORT", "8080")))
 
     logger.info(f"Starting MCP HTTP server on {host}:{port}")
 
@@ -121,7 +125,7 @@ def handler(job):
             return {
                 "status": "healthy",
                 "version": "1.0.0",
-                "mode": "runpod_serverless"
+                "mode": "runpod_serverless",
             }
 
         else:
@@ -147,11 +151,13 @@ async def handle_tool_call(job_input: dict) -> dict:
     from src.mcp_http_server import (
         search_papers,
         add_paper_from_file,
+        add_paper_from_upload,
+        add_papers_from_folder_upload,
         generate_bibliography,
         get_paper_details,
         database_stats,
         list_recent_papers,
-        delete_paper
+        delete_paper,
     )
 
     tool_name = job_input.get("tool")
@@ -163,6 +169,8 @@ async def handle_tool_call(job_input: dict) -> dict:
     tools = {
         "search_papers": search_papers,
         "add_paper_from_file": add_paper_from_file,
+        "add_paper_from_upload": add_paper_from_upload,
+        "add_papers_from_folder_upload": add_papers_from_folder_upload,
         "generate_bibliography": generate_bibliography,
         "get_paper_details": get_paper_details,
         "database_stats": database_stats,
