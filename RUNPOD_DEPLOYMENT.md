@@ -119,8 +119,11 @@ Click **Add Environment Variable** for each:
 | `CROSSREF_EMAIL` | `your.email@example.com` | Recommended |
 | `START_HTTP_SERVER` | `true` | Yes |
 | `CONFIG_PATH` | `/app/config/config-runpod.yaml` | No (default) |
+| `MCP_CLIENT_ID` | `paper-rag-client` | No (defaults to `paper-rag-client`) |
 
 > **Security Note**: Use RunPod's **Secrets** feature for sensitive values like API keys.
+>
+> **OAuth Note**: `MCP_CLIENT_ID` is used for OAuth 2.0 authentication with Claude Desktop's custom connector UI. If not set, it defaults to `paper-rag-client`. The `MCP_API_KEY` serves as both the OAuth client secret and the access token.
 
 ### Network Volume
 
@@ -146,7 +149,30 @@ After deployment:
 
 ## Step 5: Configure Claude Desktop
 
-### Install mcp-remote
+You have two options to connect Claude Desktop to your remote MCP server:
+
+### Option 1: Custom Connector UI (Recommended)
+
+This method uses Claude Desktop's built-in custom connector UI with OAuth 2.0 authentication.
+
+1. **In Claude Desktop**, go to **Settings → Connectors → Add custom connector**
+2. **Enter the following:**
+   - **Name**: `paper-rag-remote`
+   - **URL**: `https://api.runpod.ai/v2/YOUR_ENDPOINT_ID/mcp`
+   - **OAuth Client ID**: `paper-rag-client` (or your custom `MCP_CLIENT_ID` if set)
+   - **OAuth Client Secret**: Your `MCP_API_KEY` value
+
+3. **Click "Add"**
+
+Claude Desktop will automatically handle the OAuth 2.0 flow to authenticate and connect to your server.
+
+**Note:** If you set a custom `MCP_CLIENT_ID` environment variable in RunPod, use that value instead of `paper-rag-client`.
+
+### Option 2: JSON Config File (Alternative)
+
+This method uses `mcp-remote` as a bridge and requires editing the config file directly.
+
+#### Install mcp-remote
 
 Claude Desktop needs `mcp-remote` to connect to remote MCP servers:
 
@@ -154,7 +180,7 @@ Claude Desktop needs `mcp-remote` to connect to remote MCP servers:
 npm install -g mcp-remote
 ```
 
-### Configure Claude Desktop
+#### Configure Claude Desktop
 
 Edit the Claude Desktop configuration file:
 
@@ -183,7 +209,7 @@ Add the following configuration:
 - `YOUR_ENDPOINT_ID` with your actual RunPod endpoint ID
 - `YOUR_MCP_API_KEY` with the API key you set in environment variables
 
-### Restart Claude Desktop
+#### Restart Claude Desktop
 
 Quit and reopen Claude Desktop for changes to take effect.
 

@@ -1,6 +1,6 @@
 """
 Authentication middleware for MCP HTTP Server.
-Implements Bearer token authentication for remote access.
+Implements Bearer token authentication and OAuth 2.0 Client Credentials flow.
 """
 
 import os
@@ -15,13 +15,15 @@ logger = logging.getLogger(__name__)
 class BearerAuthMiddleware(BaseHTTPMiddleware):
     """
     Middleware that validates Bearer token authentication.
+    Also supports OAuth 2.0 Client Credentials flow for Claude Desktop custom connector.
 
     Requires MCP_API_KEY environment variable to be set.
-    Skips authentication for health check endpoints.
+    Optionally supports MCP_CLIENT_ID for OAuth (defaults to "paper-rag-client").
+    Skips authentication for health check endpoints and OAuth token endpoint.
     """
 
     # Paths that don't require authentication
-    EXEMPT_PATHS = {"/health", "/healthz", "/ready", "/"}
+    EXEMPT_PATHS = {"/health", "/healthz", "/ready", "/", "/oauth/token"}
 
     async def dispatch(self, request: Request, call_next):
         """Process request and validate authentication."""

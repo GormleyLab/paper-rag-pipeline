@@ -15,6 +15,8 @@ from typing import Optional, Any
 import yaml
 
 from mcp.server.fastmcp import FastMCP
+from starlette.responses import JSONResponse
+from starlette.routing import Route
 
 # Import existing components
 from src.document_processor import DocumentProcessor
@@ -1028,6 +1030,81 @@ def create_app():
 
     # Get the underlying Starlette app from FastMCP
     app = mcp.streamable_http_app()
+
+    # Add OAuth 2.0 token endpoint for Claude Desktop custom connector
+    async def oauth_token(request):
+        """
+        OAuth 2.0 Client Credentials token endpoint.
+        Allows Claude Desktop custom connector to obtain an access token.
+        """
+        try:
+            # Parse request body
+            body = await request.json()
+            grant_type = body.get("grant_type")
+            client_id = body.get("client_id")
+            client_secret = body.get("client_secret")
+
+            # Validate grant type
+            if grant_type != "client_credentials":
+                return JSONResponse(
+                    {
+                        "error": "unsupported_grant_type",
+                        "error_description": "Only 'client_credentials' is supported",
+                    },
+                    status_code=400,
+                )
+
+            # Get expected credentials from environment
+            expected_key = os.environ.get("MCP_API_KEY", "")
+            expected_client_id = os.environ.get("MCP_CLIENT_ID", "paper-rag-client")
+
+            if not expected_key:
+                return JSONResponse(
+                    {
+                        "error": "server_error",
+                        "error_description": "Server not configured",
+                    },
+                    status_code=500,
+                )
+
+            # Validate client credentials
+            if client_id != expected_client_id or client_secret != expected_key:
+                logger.warning(f"Invalid OAuth credentials: client_id={client_id}")
+                return JSONResponse(
+                    {
+                        "error": "invalid_client",
+                        "error_description": "Invalid client credentials",
+                    },
+                    status_code=401,
+                )
+
+            # Return access token (using MCP_API_KEY as the token)
+            # In a production system, you'd generate a JWT or use a token store
+            return JSONResponse(
+                {
+                    "access_token": expected_key,
+                    "token_type": "Bearer",
+                    "expires_in": 3600,  # 1 hour
+                }
+            )
+
+        except (ValueError, json.JSONDecodeError):
+            # Handle invalid JSON in request body
+            return JSONResponse(
+                {
+                    "error": "invalid_request",
+                    "error_description": "Invalid JSON in request body",
+                },
+                status_code=400,
+            )
+        except Exception as e:
+            logger.error(f"Error in OAuth token endpoint: {e}", exc_info=True)
+            return JSONResponse(
+                {"error": "server_error", "error_description": str(e)}, status_code=500
+            )
+
+    # Add OAuth token route
+    app.routes.append(Route("/oauth/token", oauth_token, methods=["POST"]))
 
     # Add authentication middleware
     app.add_middleware(BearerAuthMiddleware)
