@@ -862,6 +862,57 @@ async def get_paper_details(bibtex_key: str) -> str:
 
 
 @mcp.tool()
+async def get_paper_pdf(bibtex_key: str) -> str:
+    """
+    Retrieve the PDF file for a specific paper as base64-encoded data.
+
+    Args:
+        bibtex_key: The BibTeX key of the paper
+
+    Returns:
+        Base64-encoded PDF file content as a string
+    """
+    initialize_components()
+
+    logger.info(f"Getting PDF for: {bibtex_key}")
+
+    # First check if paper exists
+    paper = _vector_store.get_paper_by_key(bibtex_key)
+
+    if not paper:
+        return f"Error: Paper not found: {bibtex_key}"
+
+    # Get PDF path from config
+    cfg = load_config()
+    pdfs_dir = Path(cfg.get("pdfs_path", "data/pdfs"))
+    pdf_path = pdfs_dir / f"{bibtex_key}.pdf"
+
+    # Check if PDF file exists
+    if not pdf_path.exists():
+        # Try using the stored pdf_path from the paper record as fallback
+        stored_path = paper.get("pdf_path")
+        if stored_path and Path(stored_path).exists():
+            pdf_path = Path(stored_path)
+        else:
+            return f"Error: PDF file not found for paper: {bibtex_key}"
+
+    try:
+        # Read PDF file and encode to base64
+        with open(pdf_path, "rb") as f:
+            pdf_bytes = f.read()
+
+        # Encode to base64
+        pdf_base64 = base64.b64encode(pdf_bytes).decode("utf-8")
+        logger.info(f"Successfully retrieved PDF for {bibtex_key} ({len(pdf_bytes)} bytes)")
+
+        return pdf_base64
+
+    except Exception as e:
+        logger.error(f"Error reading PDF file for {bibtex_key}: {e}", exc_info=True)
+        return f"Error: Failed to read PDF file: {str(e)}"
+
+
+@mcp.tool()
 async def database_stats() -> str:
     """
     Get statistics about the paper database.
