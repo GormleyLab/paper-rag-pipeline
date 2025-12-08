@@ -107,8 +107,18 @@ def handler(job):
     try:
         job_input = job.get("input", {})
 
-        # Check if this is a request to start the HTTP server
-        mode = job_input.get("mode", "http_server")
+        # Check the mode - default to tool_call for queue-based endpoints
+        mode = job_input.get("mode")
+
+        # If no mode specified, treat as a direct tool call if tool is present
+        if mode is None:
+            if "tool" in job_input:
+                mode = "tool_call"
+            elif "method" in job_input:
+                # MCP JSON-RPC format
+                mode = "mcp_call"
+            else:
+                return {"error": "No mode or tool specified in input"}
 
         if mode == "http_server":
             # This will block and run the HTTP server
@@ -118,7 +128,17 @@ def handler(job):
 
         elif mode == "tool_call":
             # Direct tool call mode for batch processing
-            return asyncio.run(handle_tool_call(job_input))
+            # Handle async properly - check if event loop is already running
+            try:
+                loop = asyncio.get_running_loop()
+                # If we're already in an async context, create a task
+                import concurrent.futures
+                with concurrent.futures.ThreadPoolExecutor() as executor:
+                    future = executor.submit(asyncio.run, handle_tool_call(job_input))
+                    return future.result()
+            except RuntimeError:
+                # No running event loop, safe to use asyncio.run()
+                return asyncio.run(handle_tool_call(job_input))
 
         elif mode == "health_check":
             # Health check mode
@@ -127,6 +147,26 @@ def handler(job):
                 "version": "1.0.0",
                 "mode": "runpod_serverless",
             }
+
+        elif mode == "mcp_call":
+            # Handle MCP JSON-RPC format
+            method = job_input.get("method", "")
+            params = job_input.get("params", {})
+
+            if method == "tools/call":
+                tool_name = params.get("name")
+                arguments = params.get("arguments", {})
+                modified_input = {"tool": tool_name, "arguments": arguments}
+                try:
+                    loop = asyncio.get_running_loop()
+                    import concurrent.futures
+                    with concurrent.futures.ThreadPoolExecutor() as executor:
+                        future = executor.submit(asyncio.run, handle_tool_call(modified_input))
+                        return future.result()
+                except RuntimeError:
+                    return asyncio.run(handle_tool_call(modified_input))
+            else:
+                return {"error": f"Unknown MCP method: {method}"}
 
         else:
             return {"error": f"Unknown mode: {mode}"}

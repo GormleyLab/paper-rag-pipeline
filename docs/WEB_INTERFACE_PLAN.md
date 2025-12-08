@@ -287,7 +287,7 @@ GET  /api/chat/history                  # Get current conversation
 
 ## Implementation Details
 
-### RunPod Client (Direct MCP Calls)
+### RunPod Client (Queue-Based Endpoint)
 
 ```python
 # app/runpod_client.py
@@ -302,14 +302,23 @@ class MCPError(Exception):
 
 class RunPodClient:
     """
-    Client for direct MCP tool calls to the RunPod server.
+    Client for MCP tool calls to RunPod queue-based endpoint.
     Used for paper management operations (CRUD).
+
+    Queue-based endpoints use /runsync for synchronous calls with this format:
+    {
+        "input": {
+            "mode": "tool_call",
+            "tool": "tool_name",
+            "arguments": {...}
+        }
+    }
     """
-    
-    def __init__(self, api_key: str, endpoint_url: str):
+
+    def __init__(self, api_key: str, endpoint_id: str):
         self.api_key = api_key
-        self.endpoint_url = endpoint_url.rstrip('/')
-        self.mcp_endpoint = f"{self.endpoint_url}/sse"  # SSE endpoint for MCP
+        self.endpoint_id = endpoint_id
+        self.base_url = f"https://api.runpod.ai/v2/{endpoint_id}"
         self.headers = {
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json"
@@ -317,48 +326,49 @@ class RunPodClient:
 
     def _parse_response(self, response_json: dict) -> str:
         """
-        Parse MCP JSON-RPC response and extract text content.
-        
-        MCP responses have this structure:
+        Parse RunPod queue response and extract result.
+
+        Queue-based responses have this structure:
         {
-            "jsonrpc": "2.0",
-            "id": 1,
-            "result": {
-                "content": [
-                    {"type": "text", "text": "actual result here"}
-                ]
-            }
+            "id": "sync-xxx",
+            "status": "COMPLETED",
+            "output": {"result": "actual result here"},
+            "delayTime": 123,
+            "executionTime": 456
         }
         """
-        if "error" in response_json:
-            error = response_json["error"]
-            raise MCPError(f"MCP Error {error.get('code', 'unknown')}: {error.get('message', 'Unknown error')}")
-        
-        result = response_json.get("result", {})
-        content = result.get("content", [])
-        
-        if not content:
-            return ""
-        
-        # Extract text from first content block
-        first_block = content[0]
-        if first_block.get("type") == "text":
-            return first_block.get("text", "")
-        
-        return str(first_block)
+        if response_json.get("status") == "FAILED":
+            error = response_json.get("error", "Unknown error")
+            raise MCPError(f"Job failed: {error}")
+
+        if response_json.get("status") == "IN_QUEUE":
+            raise MCPError("Job still in queue - increase timeout or poll for result")
+
+        output = response_json.get("output", {})
+
+        # Handle tool_call mode responses
+        if "result" in output:
+            return output["result"]
+
+        # Handle error in output
+        if "error" in output:
+            raise MCPError(f"Tool error: {output['error']}")
+
+        return str(output)
 
     async def _call_tool(self, tool_name: str, arguments: dict, timeout: float = 120.0) -> str:
-        """Call an MCP tool on the RunPod server."""
+        """Call an MCP tool on the RunPod server via queue-based endpoint."""
         async with httpx.AsyncClient() as client:
             try:
                 response = await client.post(
-                    f"{self.endpoint_url}/mcp",
+                    f"{self.base_url}/runsync",
                     headers=self.headers,
                     json={
-                        "jsonrpc": "2.0",
-                        "method": "tools/call",
-                        "params": {"name": tool_name, "arguments": arguments},
-                        "id": 1
+                        "input": {
+                            "mode": "tool_call",
+                            "tool": tool_name,
+                            "arguments": arguments
+                        }
                     },
                     timeout=timeout
                 )
@@ -366,7 +376,7 @@ class RunPodClient:
                 return self._parse_response(response.json())
             except httpx.HTTPStatusError as e:
                 if e.response.status_code == 401:
-                    raise MCPError("Authentication failed - check MCP_API_KEY")
+                    raise MCPError("Authentication failed - check RUNPOD_API_KEY")
                 raise MCPError(f"HTTP error {e.response.status_code}: {e.response.text}")
             except httpx.TimeoutException:
                 raise MCPError(f"Request timed out after {timeout}s")
@@ -865,9 +875,12 @@ async def require_auth(request: Request) -> bool:
 ## Environment Variables
 
 ```bash
-# RunPod MCP Server Configuration
-MCP_API_KEY=your-mcp-api-key                           # Bearer token for RunPod
-MCP_SERVER_URL=https://9f6jgnmmeatk98.api.runpod.ai/sse  # SSE endpoint URL
+# RunPod MCP Server Configuration (Queue-Based Endpoint)
+RUNPOD_API_KEY=your-runpod-api-key                     # RunPod API key for authentication
+RUNPOD_ENDPOINT_ID=bonn0doh0yb272                      # Your RunPod endpoint ID
+MCP_API_KEY=your-mcp-api-key                           # MCP API key (for app-level auth if needed)
+
+# The endpoint URL is: https://api.runpod.ai/v2/{ENDPOINT_ID}/runsync
 
 # Claude API Configuration  
 ANTHROPIC_API_KEY=sk-ant-api-...                       # Anthropic API key
@@ -1433,8 +1446,8 @@ services:
    - **Region**: Choose closest to you
    - **Instance Type**: Free tier works for testing, Starter ($7/mo) for production
 5. Add environment variables:
-   - `MCP_API_KEY` - your RunPod MCP API key
-   - `MCP_SERVER_URL` - `https://9f6jgnmmeatk98.api.runpod.ai/sse` (SSE endpoint)
+   - `RUNPOD_API_KEY` - your RunPod API key
+   - `RUNPOD_ENDPOINT_ID` - `bonn0doh0yb272` (or your endpoint ID)
    - `ANTHROPIC_API_KEY` - your Anthropic API key
    - `CLAUDE_MODEL` - `claude-sonnet-4-5` (or your preferred model)
    - `APP_PASSWORD_HASH` - SHA256 hash of your password

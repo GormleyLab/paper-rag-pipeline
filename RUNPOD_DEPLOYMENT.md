@@ -84,12 +84,103 @@ RunPod offers two endpoint types. Choose based on your needs:
 
 | Type | Best For | URL Format | Custom Paths |
 |------|----------|------------|--------------|
-| **Load-Balanced** | Web interface, direct API | `https://ENDPOINT_ID.api.runpod.ai` | Yes (all paths) |
-| **Queue-Based** | mcp-remote, batch jobs | `https://api.runpod.ai/v2/ENDPOINT_ID` | No (fixed paths only) |
+| **Queue-Based** | Recommended, reliable | `https://api.runpod.ai/v2/ENDPOINT_ID` | No (fixed paths only) |
+| **Load-Balanced** | Direct HTTP access | `https://ENDPOINT_ID.api.runpod.ai` | Yes (all paths) |
 
-### Option A: Load-Balanced Endpoint (Recommended)
+### Option A: Queue-Based Endpoint (Recommended)
 
-Use this for the web interface or direct API access with Bearer token authentication.
+Queue-based endpoints are more reliable and simpler to configure. Use `/runsync` for synchronous tool calls.
+
+1. Go to [RunPod Console](https://www.runpod.io/console/serverless)
+2. Click **New Endpoint**
+3. Select **Queue** endpoint type (default)
+4. Configure:
+
+#### Basic Settings
+
+| Setting | Value |
+|---------|-------|
+| **Endpoint Name** | `paper-rag-mcp` |
+| **Container Image** | `your-dockerhub-username/paper-rag:latest` |
+| **Container Start Command** | Leave empty |
+
+#### GPU Configuration
+
+| Setting | Value |
+|---------|-------|
+| **GPU Type** | RTX 3090 (24GB) or RTX 4090 (24GB) |
+| **GPU Count** | 1 |
+
+#### Scaling Configuration
+
+| Setting | Value | Notes |
+|---------|-------|-------|
+| **Min Workers** | 0 | Scale to zero when idle |
+| **Max Workers** | 3 | Adjust based on expected load |
+| **Idle Timeout** | 60 seconds | Time before scaling down |
+| **FlashBoot** | Enabled | Faster cold starts |
+
+#### Environment Variables
+
+| Variable | Value | Required |
+|----------|-------|----------|
+| `OPENAI_API_KEY` | `sk-your-openai-key` | Yes |
+| `MCP_API_KEY` | `your-secret-api-key` | Yes |
+| `CROSSREF_EMAIL` | `your.email@example.com` | Recommended |
+
+> **Important**: Do **NOT** set `START_HTTP_SERVER` for queue-based endpoints. The handler will automatically process jobs from the queue.
+
+#### Network Volume
+
+1. Expand **Advanced** section
+2. Under **Network Volume**, select `paper-rag-data`
+3. Mount path: `/runpod-volume`
+
+#### After Creation
+
+Your endpoint URL will be: `https://api.runpod.ai/v2/ENDPOINT_ID`
+
+#### Calling MCP Tools (Queue-Based)
+
+For queue-based endpoints, wrap tool calls in the RunPod job format:
+
+```bash
+# Health check
+curl -X POST "https://api.runpod.ai/v2/ENDPOINT_ID/runsync" \
+  -H "Authorization: Bearer YOUR_RUNPOD_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"input":{"mode":"health_check"}}'
+
+# Call an MCP tool
+curl -X POST "https://api.runpod.ai/v2/ENDPOINT_ID/runsync" \
+  -H "Authorization: Bearer YOUR_RUNPOD_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "input": {
+      "mode": "tool_call",
+      "tool": "database_stats",
+      "arguments": {}
+    }
+  }'
+
+# Search papers
+curl -X POST "https://api.runpod.ai/v2/ENDPOINT_ID/runsync" \
+  -H "Authorization: Bearer YOUR_RUNPOD_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "input": {
+      "mode": "tool_call",
+      "tool": "search_papers",
+      "arguments": {"query": "machine learning", "n_results": 5}
+    }
+  }'
+```
+
+---
+
+### Option B: Load-Balanced Endpoint
+
+Use this for direct HTTP access with custom paths like `/mcp`. Requires more careful configuration.
 
 1. Go to [RunPod Console](https://www.runpod.io/console/serverless)
 2. Click **New Endpoint**
@@ -134,7 +225,9 @@ Use this for the web interface or direct API access with Bearer token authentica
 | `OPENAI_API_KEY` | `sk-your-openai-key` | Yes |
 | `MCP_API_KEY` | `your-secret-api-key` | Yes |
 | `CROSSREF_EMAIL` | `your.email@example.com` | Recommended |
-| `START_HTTP_SERVER` | `true` | Yes |
+| `START_HTTP_SERVER` | `true` | **Yes (Required for Load-Balanced)** |
+
+> **Important**: Ensure `port` and `port_health` environment variables (if set) both use `8080`.
 
 #### Network Volume
 
@@ -146,61 +239,7 @@ Use this for the web interface or direct API access with Bearer token authentica
 
 Your endpoint URL will be: `https://ENDPOINT_ID.api.runpod.ai`
 
----
-
-### Option B: Queue-Based Endpoint (For mcp-remote)
-
-Use this with the `mcp-remote` npm package.
-
-1. Go to [RunPod Console](https://www.runpod.io/console/serverless)
-2. Click **New Endpoint**
-3. Select **Queue** endpoint type (default)
-4. Configure:
-
-#### Basic Settings
-
-| Setting | Value |
-|---------|-------|
-| **Endpoint Name** | `paper-rag-mcp` |
-| **Container Image** | `your-dockerhub-username/paper-rag:latest` |
-| **Container Start Command** | Leave empty |
-
-#### GPU Configuration
-
-| Setting | Value |
-|---------|-------|
-| **GPU Type** | RTX 3090 (24GB) or RTX 4090 (24GB) |
-| **GPU Count** | 1 |
-
-#### Scaling Configuration
-
-| Setting | Value | Notes |
-|---------|-------|-------|
-| **Min Workers** | 0 | Scale to zero when idle |
-| **Max Workers** | 3 | Adjust based on expected load |
-| **Idle Timeout** | 60 seconds | Time before scaling down |
-| **FlashBoot** | Enabled | Faster cold starts |
-
-#### Environment Variables
-
-| Variable | Value | Required |
-|----------|-------|----------|
-| `OPENAI_API_KEY` | `sk-your-openai-key` | Yes |
-| `MCP_API_KEY` | `your-secret-api-key` | Yes |
-| `CROSSREF_EMAIL` | `your.email@example.com` | Recommended |
-| `START_HTTP_SERVER` | `true` | Yes |
-
-#### Network Volume
-
-1. Expand **Advanced** section
-2. Under **Network Volume**, select `paper-rag-data`
-3. Mount path: `/runpod-volume`
-
-#### After Creation
-
-Your endpoint URL will be: `https://api.runpod.ai/v2/ENDPOINT_ID`
-
-> **Note**: Queue-based endpoints only support fixed paths (`/run`, `/runsync`, `/health`, etc.). Custom paths like `/mcp` are not accessible.
+> **Note**: Load-balanced endpoints can have authentication issues at the proxy level. Queue-based endpoints are recommended for most use cases.
 
 ---
 
@@ -602,6 +641,19 @@ docker push your-dockerhub-username/paper-rag:v2
 
 ## Quick Reference
 
+### Queue-Based Endpoint (Recommended)
+
+| Item | Value |
+|------|-------|
+| **Docker Image** | `your-dockerhub-username/paper-rag:latest` |
+| **Endpoint URL** | `https://api.runpod.ai/v2/ENDPOINT_ID` |
+| **Run Sync** | `https://api.runpod.ai/v2/ENDPOINT_ID/runsync` |
+| **Health Check** | `https://api.runpod.ai/v2/ENDPOINT_ID/health` |
+| **Config File** | `/app/config/config-runpod.yaml` |
+| **Data Path** | `/runpod-volume/data/` |
+| **GPU** | RTX 3090 or RTX 4090 |
+| **START_HTTP_SERVER** | Do NOT set |
+
 ### Load-Balanced Endpoint
 
 | Item | Value |
@@ -613,15 +665,4 @@ docker push your-dockerhub-username/paper-rag:v2
 | **Config File** | `/app/config/config-runpod.yaml` |
 | **Data Path** | `/runpod-volume/data/` |
 | **GPU** | RTX 3090 or RTX 4090 |
-
-### Queue-Based Endpoint
-
-| Item | Value |
-|------|-------|
-| **Docker Image** | `your-dockerhub-username/paper-rag:latest` |
-| **Endpoint URL** | `https://api.runpod.ai/v2/ENDPOINT_ID` |
-| **Run Sync** | `https://api.runpod.ai/v2/ENDPOINT_ID/runsync` |
-| **Health Check** | `https://api.runpod.ai/v2/ENDPOINT_ID/health` |
-| **Config File** | `/app/config/config-runpod.yaml` |
-| **Data Path** | `/runpod-volume/data/` |
-| **GPU** | RTX 3090 or RTX 4090 |
+| **START_HTTP_SERVER** | `true` (required) |

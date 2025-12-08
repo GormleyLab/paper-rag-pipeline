@@ -73,7 +73,7 @@ crossref_email: ""
 
 # Server identification
 server_name: "paper-rag-remote"
-server_version: "1.0.5"
+server_version: "1.0.7"
 
 # HTTP server settings
 server_host: "0.0.0.0"
