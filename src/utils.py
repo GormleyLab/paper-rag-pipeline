@@ -1,5 +1,5 @@
 """
-Utility functions for the Academic RAG Pipeline.
+Utility functions for the Paper RAG Pipeline.
 """
 
 import hashlib
@@ -68,6 +68,24 @@ def compute_file_hash(file_path: Path) -> str:
         # Read in chunks to handle large files
         for byte_block in iter(lambda: f.read(4096), b""):
             sha256_hash.update(byte_block)
+    return sha256_hash.hexdigest()
+
+
+def compute_hash_from_bytes(data: bytes) -> str:
+    """
+    Compute SHA256 hash of bytes data for duplicate detection.
+
+    Useful for computing hashes from in-memory data (e.g., base64-decoded PDF uploads)
+    without needing to write to disk first.
+
+    Args:
+        data: Binary data to hash
+
+    Returns:
+        Hexadecimal SHA256 hash string
+    """
+    sha256_hash = hashlib.sha256()
+    sha256_hash.update(data)
     return sha256_hash.hexdigest()
 
 

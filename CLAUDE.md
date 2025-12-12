@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Academic RAG Pipeline - A locally-hosted RAG system for academic research paper management. Combines Docling (PDF processing), LanceDB (vector storage), OpenAI embeddings, and MCP (Model Context Protocol) to provide intelligent paper search and citation management through Claude Desktop.
+Paper RAG Pipeline - A locally-hosted RAG system for academic research paper management. Combines Docling (PDF processing), LanceDB (vector storage), OpenAI embeddings, and MCP (Model Context Protocol) to provide intelligent paper search and citation management through Claude Desktop.
 
 **Key Constraint**: Privacy-first architecture - all PDFs and databases stored locally. Only embedding generation calls external API (OpenAI).
 

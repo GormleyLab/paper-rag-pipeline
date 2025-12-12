@@ -1,5 +1,5 @@
 """
-Academic RAG Pipeline - Source Package
+Paper RAG Pipeline - Source Package
 """
 
 __version__ = "1.0.0"

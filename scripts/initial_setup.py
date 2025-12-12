@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Initial setup script for Academic RAG Pipeline.
+Initial setup script for Paper RAG Pipeline.
 Processes all PDFs in the configured library directory and creates the vector database.
 """
 
@@ -254,7 +254,7 @@ def process_pdf_library(config, doc_processor, metadata_extractor, embedding_gen
 def main():
     """Main setup function."""
     console.print("\n[bold cyan]═══════════════════════════════════════════════════════[/bold cyan]")
-    console.print("[bold cyan]  Academic RAG Pipeline - Initial Setup[/bold cyan]")
+    console.print("[bold cyan]  Paper RAG Pipeline - Initial Setup[/bold cyan]")
     console.print("[bold cyan]═══════════════════════════════════════════════════════[/bold cyan]\n")
 
     # Load configuration

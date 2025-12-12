@@ -1,0 +1,13 @@
+# RunPod Serverless Dependencies
+# Additional packages required for remote MCP HTTP server deployment
+
+# RunPod SDK
+runpod>=1.5.0
+
+# HTTP Server
+uvicorn>=0.22.0
+starlette>=0.27.0
+httpx>=0.24.0
+
+# ASGI server (alternative to uvicorn)
+hypercorn>=0.14.0

@@ -1,6 +1,6 @@
-# Setup Guide - Academic RAG Pipeline
+# Setup Guide - Paper RAG Pipeline
 
-This guide will walk you through setting up the Academic RAG Pipeline from scratch.
+This guide will walk you through setting up the Paper RAG Pipeline from scratch.
 
 ## Prerequisites
 
@@ -12,7 +12,7 @@ This guide will walk you through setting up the Academic RAG Pipeline from scrat
 ## Step 1: Install Dependencies
 
 ```bash
-cd academic-rag-pipeline
+cd paper-rag-pipeline
 pip install -r requirements.txt
 ```
 
@@ -73,22 +73,22 @@ This will:
 ```json
 {
   "mcpServers": {
-    "academic-rag": {
-      "command": "/absolute/path/to/academic-rag-pipeline/.venv/Scripts/python.exe",
+    "paper-rag": {
+      "command": "/absolute/path/to/paper-rag-pipeline/.venv/Scripts/python.exe",
       "args": [
-        "/absolute/path/to/academic-rag-pipeline/src/mcp_server.py"
+        "/absolute/path/to/paper-rag-pipeline/src/mcp_server.py"
       ],
       "env": {
-        "PYTHONPATH": "/absolute/path/to/academic-rag-pipeline",
+        "PYTHONPATH": "/absolute/path/to/paper-rag-pipeline",
         "OPENAI_API_KEY": "your-api-key-here",
-        "CONFIG_PATH": "/absolute/path/to/academic-rag-pipeline/config/config.yaml"
+        "CONFIG_PATH": "/absolute/path/to/paper-rag-pipeline/config/config.yaml"
       }
     }
   }
 }
 ```
 
-**Important:** Replace `/absolute/path/to/academic-rag-pipeline` with the actual full path to your project directory.
+**Important:** Replace `/absolute/path/to/paper-rag-pipeline` with the actual full path to your project directory.
 - **Windows:** Use `.venv/Scripts/python.exe` in the command path
 - **macOS/Linux:** Use `.venv/bin/python` in the command path
 

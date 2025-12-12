@@ -1,0 +1,90 @@
+# Paper RAG Pipeline Configuration - RunPod Serverless Deployment
+# All paths point to RunPod Network Volume for persistence
+
+# ===========================================
+# PERSISTENT STORAGE PATHS (Network Volume)
+# ===========================================
+# All data stored on /runpod-volume persists across serverless invocations
+# IMPORTANT: Without network volume attached, all data is lost when workers scale down!
+
+# Vector database - stores all embeddings and paper metadata
+lancedb_path: "/runpod-volume/data/lancedb"
+
+# PDF copies - database copies renamed by citation key (e.g., Smith2024.pdf)
+pdfs_path: "/runpod-volume/data/pdfs"
+
+# BibTeX files - individual .bib files per paper (e.g., Smith2024.bib)
+bibs_output_path: "/runpod-volume/data/bibs"
+
+# Source PDF library - not typically used in serverless (papers added via API)
+pdf_library_path: "/runpod-volume/pdfs"
+
+# Default bibliography output location
+default_bib_output: "/runpod-volume/data/references.bib"
+
+# ===========================================
+# VECTOR DATABASE SETTINGS
+# ===========================================
+
+# Vector dimension (must match embedding model output)
+# text-embedding-3-large produces 3072-dimensional vectors
+vector_dimension: 3072
+
+# ===========================================
+# EMBEDDING SETTINGS
+# ===========================================
+
+# OpenAI embedding model
+# Options: text-embedding-3-large (3072 dim), text-embedding-3-small (1536 dim)
+embedding_model: "text-embedding-3-large"
+
+# API key is set via OPENAI_API_KEY environment variable
+openai_api_key: ""
+
+# Number of texts to embed per API call (reduce if hitting rate limits)
+batch_size: 100
+
+# ===========================================
+# DOCUMENT CHUNKING SETTINGS
+# ===========================================
+
+# Chunking strategy: "hybrid" uses Docling's semantic chunking
+chunking_strategy: "hybrid"
+
+# Maximum tokens per chunk (affects embedding quality vs. context)
+max_chunk_tokens: 1000
+
+# Token overlap between chunks (helps maintain context continuity)
+chunk_overlap: 150
+
+# ===========================================
+# METADATA EXTRACTION
+# ===========================================
+
+# CrossRef API URL for DOI resolution
+crossref_api_url: "https://api.crossref.org/works"
+
+# CrossRef email for polite API usage (set via CROSSREF_EMAIL env var)
+crossref_email: ""
+
+# ===========================================
+# MCP SERVER SETTINGS
+# ===========================================
+
+# Server identification
+server_name: "paper-rag-remote"
+server_version: "1.0.8"
+
+# HTTP server settings
+server_host: "0.0.0.0"
+server_port: 8080
+
+# Logging level (DEBUG, INFO, WARNING, ERROR)
+log_level: "INFO"
+
+# ===========================================
+# BIBLIOGRAPHY SETTINGS
+# ===========================================
+
+# Default BibTeX entry type when unknown
+bibtex_entry_type: "article"
