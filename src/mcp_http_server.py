@@ -240,7 +240,7 @@ async def search_papers(
                     "doi": doi,
                     "url": result.get("url"),
                     "bibtex_key": result["bibtex_key"],
-                    "abstract": result.get("text", "")[:500],
+                    "text": result.get("text", ""),
                     "relevance_score": result.get("_distance", 0.5),
                     "section": result.get("section_title"),
                     "page": result.get("page_number"),
@@ -903,7 +903,9 @@ async def get_paper_pdf(bibtex_key: str) -> str:
 
         # Encode to base64
         pdf_base64 = base64.b64encode(pdf_bytes).decode("utf-8")
-        logger.info(f"Successfully retrieved PDF for {bibtex_key} ({len(pdf_bytes)} bytes)")
+        logger.info(
+            f"Successfully retrieved PDF for {bibtex_key} ({len(pdf_bytes)} bytes)"
+        )
 
         return pdf_base64
 
