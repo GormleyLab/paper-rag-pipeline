@@ -1,150 +1,175 @@
 # Quick Start Guide
 
-Get up and running with the Paper RAG Pipeline in 10 minutes!
+Get up and running with the Paper RAG Pipeline in 10 minutes.
 
-## 1. Install Dependencies (2 min)
+## Prerequisites
+
+- Python 3.10+
+- PostgreSQL with pgvector extension
+- AWS S3 bucket (or localstack for local development)
+- OpenAI API key
+
+## 1. Install Dependencies
 
 ```bash
 pip install -r requirements.txt
 ```
 
-## 2. Set Up Environment (1 min)
+## 2. Set Up Environment
 
 ```bash
 # Copy example file
 cp .env.example .env
 
-# Edit .env and add your OpenAI API key
+# Edit .env with your configuration:
+# DATABASE_URL=postgresql+asyncpg://user:pass@localhost:5432/paper_rag
 # OPENAI_API_KEY=sk-your-key-here
-# CROSSREF_EMAIL=your.email@edu
+# S3_BUCKET=paper-rag-pdfs
+# AWS_REGION=us-east-1
+# CROSSREF_EMAIL=your.email@edu (optional but recommended)
 ```
 
-## 3. Configure PDF Path (30 sec)
-
-Edit `config/config.yaml`:
-```yaml
-pdf_library_path: "/path/to/your/pdfs"  # Change this line
-```
-
-## 4. Initialize Database (varies by library size)
+## 3. Run Database Migrations
 
 ```bash
-python scripts/initial_setup.py
+alembic upgrade head
 ```
 
-Expected: ~2 minutes per paper, ~$0.015 per paper
+This creates the `paper_rag` schema with `papers` and `chunks` tables.
 
-## 5. Test MCP Server (Optional - 2 min)
+## 4. Initialize Database (Optional)
 
-Before configuring Claude Desktop, you can test your MCP server locally using the MCP Inspector:
+If you have existing PDFs to import:
 
 ```bash
-# Install MCP Inspector (one-time setup)
-npm install -g @modelcontextprotocol/inspector
-
-# Run the inspector from the src folder
-cd src
-npx @modelcontextprotocol/inspector python mcp_server.py
+python scripts/initial_setup.py /path/to/your/pdfs
 ```
 
-The inspector will:
-- Start a local web server (usually on `http://localhost:6274`)
-- Automatically open in your browser
-- Let you test all 6 MCP tools interactively
+Expected: ~2 minutes per paper, ~$0.015 per paper for embeddings.
 
-**To stop the inspector:** Press `Ctrl+C` in the terminal
+## 5. Start the MCP Server
 
-This is helpful for debugging before connecting to Claude Desktop!
-
-## 6. Configure Claude Desktop (2 min)
-
-Edit Claude Desktop config:
-- **macOS**: `~/Library/Application Support/Claude/claude_desktop_config.json`
-- **Windows**: `%APPDATA%\Claude\claude_desktop_config.json`
-
-Add:
-```json
-{
-  "mcpServers": {
-    "paper-rag": {
-      "command": "/FULL/PATH/TO/paper-rag-pipeline/.venv/Scripts/python.exe",
-      "args": ["/FULL/PATH/TO/paper-rag-pipeline/src/mcp_server.py"],
-      "env": {
-        "PYTHONPATH": "/FULL/PATH/TO/paper-rag-pipeline",
-        "OPENAI_API_KEY": "sk-your-key-here",
-        "CONFIG_PATH": "/FULL/PATH/TO/paper-rag-pipeline/config/config.yaml"
-      }
-    }
-  }
-}
+**For local development (with health endpoints):**
+```bash
+uvicorn src.mcp_http_server:create_app --factory --host 0.0.0.0 --port 8000
 ```
 
-**Important:** Replace `/FULL/PATH/TO/` with your actual path!
-- **Windows:** Use `.venv/Scripts/python.exe`
-- **macOS/Linux:** Use `.venv/bin/python`
-
-## 7. Restart Claude Desktop
-
-Quit and reopen Claude Desktop app.
-
-## 8. Test It! (30 sec)
-
-In Claude Desktop, try:
-```
-Search my papers for "machine learning"
+**For AWS AgentCore compatible mode:**
+```bash
+python src/mcp_http_server.py
 ```
 
-You should see results from your database!
+The server starts on port 8000 at `/mcp` endpoint.
+
+## 6. Test the Server
+
+```bash
+# Health check (only available with uvicorn method above)
+curl http://localhost:8000/health
+# Returns: {"status": "ok", "service": "paper-rag"}
+
+# List MCP tools (works with both methods)
+curl -X POST http://localhost:8000/mcp \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","method":"tools/list","id":1}'
+```
+
+## Using the MCP Tools
+
+### Via MCP Client
+
+Connect any MCP-compatible client to `http://localhost:8000/mcp`.
+
+### Via curl (for testing)
+
+```bash
+# List tools
+curl -X POST http://localhost:8000/mcp \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","method":"tools/list","id":1}'
+
+# Get database stats
+curl -X POST http://localhost:8000/mcp \
+  -H "Content-Type: application/json" \
+  -d '{
+    "jsonrpc":"2.0",
+    "method":"tools/call",
+    "params":{"name":"database_stats","arguments":{}},
+    "id":1
+  }'
+
+# Search papers
+curl -X POST http://localhost:8000/mcp \
+  -H "Content-Type: application/json" \
+  -d '{
+    "jsonrpc":"2.0",
+    "method":"tools/call",
+    "params":{
+      "name":"search_papers",
+      "arguments":{"query":"machine learning","n_results":5}
+    },
+    "id":1
+  }'
+```
 
 ## Common Commands
 
 ### Search for papers
-```
-Find papers about [topic] from the last 3 years
+```json
+{"name": "search_papers", "arguments": {"query": "neural networks", "n_results": 5}}
 ```
 
-### Add a paper
-1. Drag PDF into Claude Desktop chat
-2. Say: "Add this paper to my database"
+### Add a paper from file
+```json
+{"name": "add_paper_from_file", "arguments": {"file_path": "/path/to/paper.pdf"}}
+```
+
+### Add a paper from base64 data
+```json
+{"name": "add_paper_from_upload", "arguments": {"pdf_data": "base64...", "filename": "paper.pdf"}}
+```
 
 ### Generate bibliography
-```
-Generate a .bib file with Smith2024, Jones2023, Chen2022
+```json
+{"name": "generate_bibliography", "arguments": {"bibtex_keys": ["Smith2024", "Jones2023"]}}
 ```
 
 ### Get paper details
-```
-Show me information about the Wang2024 paper
+```json
+{"name": "get_paper_details", "arguments": {"bibtex_key": "Smith2024"}}
 ```
 
 ### Database stats
-```
-How many papers are in my database?
+```json
+{"name": "database_stats", "arguments": {}}
 ```
 
 ## Troubleshooting
 
-**MCP server not showing up?**
-- Check Claude Desktop logs
-- Verify Python path is correct (use absolute paths)
-- Make sure you restarted Claude Desktop
+**Database connection failed?**
+- Check DATABASE_URL in .env
+- Verify PostgreSQL is running
+- Ensure pgvector extension is installed: `CREATE EXTENSION vector;`
 
-**"OpenAI API Key Not Found"?**
-- Check `.env` file has your key
-- Check Claude Desktop config has the key
-- No quotes needed around the key
+**S3 upload failed?**
+- Check AWS credentials (or use IAM role)
+- Verify S3_BUCKET exists
+- Check AWS_REGION is correct
+
+**OpenAI API Key Not Found?**
+- Check OPENAI_API_KEY is set in .env
 
 **Papers not processing?**
-- Check `data/logs/initial_setup.log`
-- Make sure PDF path is correct
+- Check logs in stdout
 - Verify PDFs are not encrypted
+- Ensure PDF paths are correct
 
 ## Next Steps
 
 - Read [docs/setup.md](docs/setup.md) for detailed setup
-- Check [PRD.md](PRD.md) for all features
-- See [IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md) for what's implemented
+- Check [TROUBLESHOOTING.md](TROUBLESHOOTING.md) for common issues
+- See [CLAUDE.md](CLAUDE.md) for developer documentation
 
 ---
 
-**Need help?** Check the logs in `data/logs/` for error messages.
+**Need help?** Check the server logs for error messages.

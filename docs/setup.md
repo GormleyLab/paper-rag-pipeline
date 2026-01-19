@@ -1,13 +1,13 @@
 # Setup Guide - Paper RAG Pipeline
 
-This guide will walk you through setting up the Paper RAG Pipeline from scratch.
+This guide walks you through setting up the Paper RAG Pipeline for AWS AgentCore deployment.
 
 ## Prerequisites
 
 - Python 3.10 or higher
+- PostgreSQL 15+ with pgvector extension
+- AWS S3 bucket for PDF storage
 - OpenAI API account with API key
-- Claude Desktop app installed
-- A local library of research papers (PDFs)
 
 ## Step 1: Install Dependencies
 
@@ -16,7 +16,13 @@ cd paper-rag-pipeline
 pip install -r requirements.txt
 ```
 
-**Note:** This may take a few minutes as it installs all required packages including Docling, LanceDB, and OpenAI.
+This installs all required packages including:
+- SQLAlchemy + asyncpg (PostgreSQL)
+- pgvector (vector operations)
+- boto3 (AWS S3)
+- Docling (PDF processing)
+- OpenAI (embeddings)
+- FastMCP (MCP server)
 
 ## Step 2: Configure Environment Variables
 
@@ -25,174 +31,323 @@ pip install -r requirements.txt
    cp .env.example .env
    ```
 
-2. Edit `.env` and add your API keys:
+2. Edit `.env` with your configuration:
    ```bash
+   # Required
+   DATABASE_URL=postgresql+asyncpg://user:password@host:5432/dbname
    OPENAI_API_KEY=sk-your-actual-api-key-here
+   S3_BUCKET=paper-rag-pdfs
+   AWS_REGION=us-east-1
+
+   # Optional but recommended
    CROSSREF_EMAIL=your.email@university.edu
+
+   # Optional (if not using IAM role)
+   AWS_ACCESS_KEY_ID=your-access-key
+   AWS_SECRET_ACCESS_KEY=your-secret-key
    ```
 
-## Step 3: Configure the Application
+## Step 3: Set Up PostgreSQL
 
-1. Edit `config/config.yaml`:
-   ```yaml
-   # Change this to your PDF library path
-   pdf_library_path: "/Users/yourname/Documents/Papers"
-   ```
+### Install pgvector extension
 
-2. Review other settings (optional):
-   - `max_chunk_tokens`: Size of text chunks (default: 1000)
-   - `batch_size`: Number of embeddings per API call (default: 100)
-   - `lancedb_path`: Where to store the vector database
+```sql
+-- Connect to your database
+CREATE EXTENSION IF NOT EXISTS vector;
+```
 
-## Step 4: Run Initial Setup
+### For AWS RDS
 
-Process your PDF library and create the vector database:
+1. Use PostgreSQL 15+ (pgvector is pre-installed)
+2. Ensure your parameter group allows the extension
+3. Run: `CREATE EXTENSION vector;`
+
+### For Local Development
 
 ```bash
-python scripts/initial_setup.py
+# macOS with Homebrew
+brew install pgvector
+
+# Or build from source
+git clone https://github.com/pgvector/pgvector.git
+cd pgvector
+make && make install
+```
+
+## Step 4: Run Database Migrations
+
+```bash
+alembic upgrade head
+```
+
+This creates:
+- `paper_rag` schema
+- `papers` table (paper metadata)
+- `chunks` table (text chunks with embeddings)
+- HNSW index for vector similarity search
+
+## Step 5: Set Up S3 Bucket
+
+### Create bucket (if needed)
+
+```bash
+aws s3 mb s3://paper-rag-pdfs --region us-east-1
+```
+
+### Recommended bucket policy
+
+```json
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Effect": "Allow",
+            "Action": [
+                "s3:PutObject",
+                "s3:GetObject",
+                "s3:DeleteObject",
+                "s3:HeadObject"
+            ],
+            "Resource": "arn:aws:s3:::paper-rag-pdfs/*"
+        }
+    ]
+}
+```
+
+## Step 6: Initialize Database (Optional)
+
+If you have existing PDFs to import:
+
+```bash
+python scripts/initial_setup.py /path/to/your/pdfs
 ```
 
 This will:
-- Scan your PDF directory for all PDF files
+- Scan the directory for PDF files
 - Extract text and metadata from each paper
 - Generate embeddings using OpenAI API
-- Store everything in LanceDB
+- Upload PDFs to S3
+- Store everything in PostgreSQL
 
-**Expected time:** ~2 minutes per paper (depends on paper length and API speed)
-
+**Expected time:** ~2 minutes per paper
 **Expected cost:** ~$0.015 per paper for embeddings
 
-## Step 5: Configure Claude Desktop
+## Step 7: Start the MCP Server
 
-1. Locate your Claude Desktop configuration file:
-   - **macOS:** `~/Library/Application Support/Claude/claude_desktop_config.json`
-   - **Windows:** `%APPDATA%\Claude\claude_desktop_config.json`
+```bash
+python src/mcp_http_server.py
+```
 
-2. Add the MCP server configuration. Edit the file and add:
+The server starts on port 8000 with endpoints:
+- `/mcp` - MCP protocol endpoint
+- `/health` - Health check
+- `/ping` - Simple ping
+
+## Step 8: Verify Installation
+
+1. Check health endpoint:
+   ```bash
+   curl http://localhost:8000/health
+   ```
+
+2. List available tools:
+   ```bash
+   curl -X POST http://localhost:8000/mcp \
+     -H "Content-Type: application/json" \
+     -d '{"jsonrpc":"2.0","method":"tools/list","id":1}'
+   ```
+
+3. Test a search:
+   ```bash
+   curl -X POST http://localhost:8000/mcp \
+     -H "Content-Type: application/json" \
+     -d '{
+       "jsonrpc":"2.0",
+       "method":"tools/call",
+       "params":{"name":"database_stats","arguments":{}},
+       "id":1
+     }'
+   ```
+
+## Connecting MCP Clients
+
+### Claude Desktop (via mcp-remote)
 
 ```json
 {
   "mcpServers": {
     "paper-rag": {
-      "command": "/absolute/path/to/paper-rag-pipeline/.venv/Scripts/python.exe",
-      "args": [
-        "/absolute/path/to/paper-rag-pipeline/src/mcp_server.py"
-      ],
-      "env": {
-        "PYTHONPATH": "/absolute/path/to/paper-rag-pipeline",
-        "OPENAI_API_KEY": "your-api-key-here",
-        "CONFIG_PATH": "/absolute/path/to/paper-rag-pipeline/config/config.yaml"
-      }
+      "command": "npx",
+      "args": ["mcp-remote", "http://your-server:8000/mcp"]
     }
   }
 }
 ```
 
-**Important:** Replace `/absolute/path/to/paper-rag-pipeline` with the actual full path to your project directory.
-- **Windows:** Use `.venv/Scripts/python.exe` in the command path
-- **macOS/Linux:** Use `.venv/bin/python` in the command path
+### Direct HTTP
 
-3. **Restart Claude Desktop** for changes to take effect.
+Any MCP-compatible client can connect to `http://your-server:8000/mcp`.
 
-## Step 6: Verify Installation
+## Adding Papers
 
-1. Open Claude Desktop
+### Via MCP Tool (single paper)
 
-2. Look for the MCP server indicator (usually a tool icon or server status)
+```json
+{
+  "name": "add_paper_from_file",
+  "arguments": {"file_path": "/path/to/paper.pdf"}
+}
+```
 
-3. Try a test query:
-   ```
-   Search my papers for "machine learning"
-   ```
+### Via Base64 Upload (for remote clients)
 
-4. You should see results from your database!
+```json
+{
+  "name": "add_paper_from_upload",
+  "arguments": {
+    "pdf_data": "base64-encoded-pdf",
+    "filename": "paper.pdf"
+  }
+}
+```
+
+### Batch Import
+
+```bash
+python scripts/initial_setup.py /path/to/pdf/folder
+```
 
 ## Troubleshooting
 
-### MCP Server Not Showing Up
+### Database Connection Issues
+- Verify DATABASE_URL format
+- Check PostgreSQL is running
+- Ensure pgvector extension is installed
 
-1. Check Claude Desktop logs:
-   - macOS: `~/Library/Logs/Claude/`
-   - Windows: `%APPDATA%\Claude\logs\`
+### S3 Issues
+- Verify credentials or IAM role
+- Check bucket exists and region matches
+- Verify bucket policy allows required operations
 
-2. Verify Python path in config is correct
+### OpenAI Issues
+- Check API key is valid
+- Monitor rate limits
+- Reduce batch_size if hitting limits
 
-3. Test the MCP server manually:
-   ```bash
-   python src/mcp_server.py
-   ```
-
-### "OpenAI API Key Not Found"
-
-- Make sure `OPENAI_API_KEY` is set in both:
-  - `.env` file
-  - Claude Desktop config JSON
-
-### "Config file not found"
-
-- Verify `config.yaml` path is correct
-- Use absolute paths, not relative paths
-
-### Papers Not Processing
-
-- Check `data/logs/initial_setup.log` for errors
-- Common issues:
-  - Corrupted PDFs (will be skipped)
-  - Encrypted PDFs (not supported)
-  - Permission issues
-
-## Adding More Papers Later
-
-After initial setup, you can add papers in two ways:
-
-### Option 1: Via Claude Desktop (Recommended)
-
-1. Open Claude Desktop
-2. Drag a PDF file into the chat
-3. Say: "Add this paper to my database"
-
-### Option 2: Re-run Setup Script
-
-Add new PDFs to your library directory and run:
-```bash
-python scripts/initial_setup.py
-```
-
-It will only process new papers (duplicates are automatically detected).
-
-## Next Steps
-
-- Read [usage.md](usage.md) for detailed usage examples
-- See [troubleshooting.md](troubleshooting.md) for common issues
-- Check [PRD.md](../PRD.md) for full feature documentation
+See [TROUBLESHOOTING.md](../TROUBLESHOOTING.md) for more details.
 
 ## Cost Management
 
-**Initial Setup:**
-- 1000 papers ≈ $15 one-time cost
+**Embedding Costs:**
+- Initial setup (1000 papers): ~$15
+- Per paper: ~$0.015
 
-**Ongoing Usage:**
-- Queries: ~$0.0001 per query
-- Adding papers: ~$0.015 per paper
+**S3 Costs:**
+- Storage: ~$0.023/GB/month
+- Requests: minimal for typical usage
 
 **Tips to reduce costs:**
 - Process papers in batches
-- Use smaller `batch_size` if hitting rate limits
-- Monitor usage in `data/logs/`
+- Use smaller embedding model if accuracy permits
+- Monitor usage in OpenAI dashboard
 
 ## Security Notes
 
-- API keys are stored in `.env` (not committed to git)
-- All PDFs stay local on your machine
-- Only text chunks are sent to OpenAI for embedding
-- LanceDB runs entirely locally (no cloud storage)
+- API keys stored in `.env` (never commit to git)
+- Use IAM roles in production (not access keys)
+- PDFs stored in S3 with server-side encryption
+- Database should use SSL in production
 
-## Getting Help
+## AWS AgentCore Deployment
 
-- Check the logs: `data/logs/`
-- Review the PRD for detailed specifications
-- File issues on the project repository
+The MCP server is compatible with AWS Bedrock AgentCore deployment.
+
+### Prerequisites
+
+1. Install the AgentCore toolkit:
+   ```bash
+   pip install bedrock-agentcore-starter-toolkit
+   ```
+
+2. Ensure you have AWS credentials configured with appropriate permissions.
+
+3. Set up an IAM execution role for the AgentCore runtime.
+
+### Deploy to AgentCore
+
+1. **Configure the deployment:**
+   ```bash
+   agentcore configure -e src/mcp_http_server.py --protocol MCP
+   ```
+
+   During configuration, you'll be prompted for:
+   - **Execution Role**: IAM role ARN with permissions for your resources
+   - **ECR**: Press `enter` to auto-create
+   - **Dependencies**: CLI auto-detects `requirements.txt`
+   - **OAuth**: Configure if using authentication
+
+2. **Set environment variables** for the runtime:
+   - `DATABASE_URL` - PostgreSQL connection string
+   - `OPENAI_API_KEY` - OpenAI API key
+   - `S3_BUCKET` - S3 bucket name
+   - `AWS_REGION` - AWS region
+
+3. **Launch the deployment:**
+   ```bash
+   agentcore launch
+   ```
+
+   This will:
+   - Build a Docker container
+   - Push to Amazon ECR
+   - Create the AgentCore runtime
+   - Return the agent runtime ARN
+
+### Connecting to Deployed Server
+
+After deployment, use the ARN to connect:
+
+```python
+import os
+from mcp import ClientSession
+from mcp.client.streamable_http import streamablehttp_client
+
+agent_arn = "arn:aws:bedrock-agentcore:us-west-2:123456789:runtime/paper-rag-xyz"
+bearer_token = os.getenv('BEARER_TOKEN')
+
+encoded_arn = agent_arn.replace(':', '%3A').replace('/', '%2F')
+mcp_url = f"https://bedrock-agentcore.us-west-2.amazonaws.com/runtimes/{encoded_arn}/invocations?qualifier=DEFAULT"
+
+headers = {"authorization": f"Bearer {bearer_token}"}
+
+async with streamablehttp_client(mcp_url, headers) as (read_stream, write_stream, _):
+    async with ClientSession(read_stream, write_stream) as session:
+        await session.initialize()
+        tools = await session.list_tools()
+        print(tools)
+```
+
+### Local Testing (Alternative)
+
+For local testing with health endpoints:
+
+```bash
+# Option 1: Using uvicorn factory
+uvicorn src.mcp_http_server:create_app --factory --host 0.0.0.0 --port 8000
+
+# Option 2: Direct Python
+python -c "from src.mcp_http_server import run_http_server; run_http_server()"
+
+# Option 3: AgentCore-compatible (no health endpoints)
+python src/mcp_http_server.py
+```
+
+## Next Steps
+
+- Read [CLAUDE.md](../CLAUDE.md) for developer documentation
+- Check [TROUBLESHOOTING.md](../TROUBLESHOOTING.md) for common issues
+- See the PRD for full feature documentation
 
 ---
 
-**Happy researching!** 📚✨
+**Happy researching!**

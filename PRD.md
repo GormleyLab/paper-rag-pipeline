@@ -1,11 +1,27 @@
 # Product Requirements Document: Paper RAG Pipeline for Research & Citation Management
 
+> **⚠️ HISTORICAL DOCUMENT**
+>
+> This PRD describes the **v1.0 architecture** (LanceDB + Claude Desktop) from November 2025.
+>
+> The project has been refactored to **v2.0** (PostgreSQL + pgvector + AWS AgentCore) as of January 2025.
+>
+> **For current documentation, see:**
+> - [README.md](README.md) - Project overview
+> - [IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md) - Current architecture and status
+> - [CLAUDE.md](CLAUDE.md) - Developer documentation
+> - [docs/setup.md](docs/setup.md) - Setup guide
+>
+> This document is preserved for historical reference and original design intent.
+
+---
+
 ## Document Information
 
-**Version:** 1.0  
-**Date:** November 11, 2025  
-**Author:** Adam (Associate Professor, Biomedical Engineering, Rutgers University)  
-**Status:** Initial Release
+**Version:** 1.0 (Historical)
+**Date:** November 11, 2025
+**Author:** Adam (Associate Professor, Biomedical Engineering, Rutgers University)
+**Status:** Superseded by v2.0 (AWS AgentCore)
 
 ---
 
