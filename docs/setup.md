@@ -49,30 +49,54 @@ This installs all required packages including:
 
 ## Step 3: Set Up PostgreSQL
 
-### Install pgvector extension
-
-```sql
--- Connect to your database
-CREATE EXTENSION IF NOT EXISTS vector;
-```
-
 ### For AWS RDS
 
-1. Use PostgreSQL 15+ (pgvector is pre-installed)
-2. Ensure your parameter group allows the extension
-3. Run: `CREATE EXTENSION vector;`
+RDS PostgreSQL 15+ has pgvector pre-installed. You just need to enable it:
+
+1. **Connect to your RDS instance** using `psql`:
+   ```bash
+   psql -h YOUR_RDS_ENDPOINT -U YOUR_USERNAME -d postgres
+   ```
+   You'll be prompted for your password.
+
+2. **Enable the pgvector extension**:
+   ```sql
+   CREATE EXTENSION IF NOT EXISTS vector;
+   ```
+
+3. **Create the database** (if it doesn't exist):
+   ```sql
+   CREATE DATABASE paper_rag;
+   ```
+
+4. Type `\q` to exit psql.
+
+**Note**: Ensure your RDS security group allows inbound connections on port 5432 from your IP address.
 
 ### For Local Development
 
-```bash
-# macOS with Homebrew
-brew install pgvector
+1. **Install PostgreSQL and pgvector**:
+   ```bash
+   # macOS with Homebrew
+   brew install postgresql@15 pgvector
 
-# Or build from source
-git clone https://github.com/pgvector/pgvector.git
-cd pgvector
-make && make install
-```
+   # Start PostgreSQL
+   brew services start postgresql@15
+   ```
+
+2. **Connect to PostgreSQL**:
+   ```bash
+   psql -U postgres
+   ```
+
+3. **Create database and enable extension**:
+   ```sql
+   CREATE DATABASE paper_rag;
+   \c paper_rag
+   CREATE EXTENSION IF NOT EXISTS vector;
+   ```
+
+4. Type `\q` to exit psql.
 
 ## Step 4: Run Database Migrations
 

@@ -73,7 +73,7 @@ class Chunk(Base, UUIDMixin):
 
     Each chunk belongs to a paper and contains:
     - The text content
-    - A 3072-dimensional embedding vector (text-embedding-3-large)
+    - A 1536-dimensional embedding vector (text-embedding-3-large with reduced dimensions)
     - Positional and structural metadata
     """
 
@@ -89,8 +89,9 @@ class Chunk(Base, UUIDMixin):
     chunk_index: Mapped[int] = mapped_column(Integer, nullable=False)
     text: Mapped[str] = mapped_column(Text, nullable=False)
 
-    # Embedding vector (3072 dimensions for text-embedding-3-large)
-    embedding: Mapped[list] = mapped_column(Vector(3072), nullable=False)
+    # Embedding vector (1536 dimensions - text-embedding-3-large with reduced dims
+    # to stay under pgvector's 2000 dimension limit for indexes)
+    embedding: Mapped[list] = mapped_column(Vector(1536), nullable=False)
 
     # Chunk metadata
     section_title: Mapped[str] = mapped_column(String(500), nullable=False)
@@ -101,7 +102,7 @@ class Chunk(Base, UUIDMixin):
     # Relationships
     paper: Mapped["Paper"] = relationship("Paper", back_populates="chunks")
 
-    # Indexes
+    # Indexes (HNSW works with 1536 dimensions, which is under pgvector's 2000 limit)
     __table_args__ = (
         Index("idx_chunks_paper_id", "paper_id"),
         Index(

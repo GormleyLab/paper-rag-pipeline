@@ -4,6 +4,7 @@ Metadata extraction module for citation information from PDFs and APIs.
 
 import logging
 import time
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from pathlib import Path
 from typing import Optional
 from dataclasses import dataclass
@@ -73,6 +74,7 @@ class MetadataExtractor:
         crossref_email: Optional[str] = None,
         max_retries: int = 3,
         retry_delay: float = 1.0,
+        pdf2bib_timeout: int = 60,
     ):
         """
         Initialize the metadata extractor.
@@ -81,10 +83,12 @@ class MetadataExtractor:
             crossref_email: Email for polite CrossRef API usage
             max_retries: Maximum number of API retry attempts
             retry_delay: Delay between retries in seconds
+            pdf2bib_timeout: Timeout in seconds for pdf2bib extraction (default: 60)
         """
         self.crossref_email = crossref_email
         self.max_retries = max_retries
         self.retry_delay = retry_delay
+        self.pdf2bib_timeout = pdf2bib_timeout
 
         self.session = requests.Session()
         if crossref_email:
@@ -190,8 +194,16 @@ class MetadataExtractor:
         try:
             logger.info(f"Attempting pdf2bib extraction for: {pdf_path.name}")
 
-            # Call pdf2bib to extract identifier and fetch metadata
-            result = pdf2bib.pdf2bib(str(pdf_path))
+            # Call pdf2bib with timeout to prevent hanging on problematic PDFs
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(pdf2bib.pdf2bib, str(pdf_path))
+                try:
+                    result = future.result(timeout=self.pdf2bib_timeout)
+                except FuturesTimeoutError:
+                    logger.warning(
+                        f"pdf2bib timed out after {self.pdf2bib_timeout}s for {pdf_path.name}"
+                    )
+                    return None
 
             # Handle result format (can be dict with file path as key or direct result)
             if isinstance(result, dict):

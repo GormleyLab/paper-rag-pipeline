@@ -31,7 +31,10 @@ class Settings(BaseSettings):
     # OpenAI Embeddings
     openai_api_key: str
     embedding_model: str = "text-embedding-3-large"
-    vector_dimension: int = 3072
+    # Using 1536 dimensions (reduced from 3072) because pgvector on RDS
+    # limits indexes to 2000 dimensions. text-embedding-3-large supports
+    # native dimension reduction via the API.
+    vector_dimension: int = 1536
     batch_size: int = 100
 
     # Chunking settings

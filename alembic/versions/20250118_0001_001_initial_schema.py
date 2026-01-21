@@ -88,7 +88,7 @@ def upgrade() -> None:
         sa.Column("paper_id", sa.UUID(), nullable=False),
         sa.Column("chunk_index", sa.Integer(), nullable=False),
         sa.Column("text", sa.Text(), nullable=False),
-        sa.Column("embedding", Vector(3072), nullable=False),
+        sa.Column("embedding", Vector(1536), nullable=False),
         sa.Column("section_title", sa.String(500), nullable=False),
         sa.Column("section_hierarchy", sa.Text(), nullable=False),
         sa.Column("page_number", sa.Integer(), nullable=True),
@@ -111,6 +111,7 @@ def upgrade() -> None:
     )
 
     # Create HNSW index for vector similarity search
+    # Using 1536 dimensions (reduced from 3072) to stay under pgvector's 2000 limit
     op.execute(
         """
         CREATE INDEX idx_chunks_embedding ON paper_rag.chunks
