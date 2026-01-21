@@ -1,13 +1,15 @@
 # Quick Start Guide
 
-Get up and running with the Paper RAG Pipeline in 10 minutes.
+Get up and running with the Paper RAG Pipeline.
 
 ## Prerequisites
 
 - Python 3.10+
-- PostgreSQL with pgvector extension
-- AWS S3 bucket (or localstack for local development)
+- PostgreSQL 15+ with pgvector extension
+- AWS S3 bucket
 - OpenAI API key
+
+**If using AWS RDS in a private subnet**: You'll need a bastion host for local development. See [setup.md](setup.md#bastion-host-setup-for-local-development) for detailed instructions.
 
 ## 1. Install Dependencies
 
@@ -21,12 +23,25 @@ pip install -r requirements.txt
 # Copy example file
 cp .env.example .env
 
-# Edit .env with your configuration:
-# DATABASE_URL=postgresql+asyncpg://user:pass@localhost:5432/paper_rag
-# OPENAI_API_KEY=sk-your-key-here
-# S3_BUCKET=paper-rag-pdfs
-# AWS_REGION=us-east-1
-# CROSSREF_EMAIL=your.email@edu (optional but recommended)
+# Edit .env with your configuration
+```
+
+**For local development with RDS via SSH tunnel:**
+```bash
+DATABASE_URL=postgresql+asyncpg://user:pass@localhost:15432/paper_rag
+```
+
+**For AWS deployment (direct RDS access):**
+```bash
+DATABASE_URL=postgresql+asyncpg://user:pass@your-rds-endpoint:5432/paper_rag
+```
+
+**Other required variables:**
+```bash
+OPENAI_API_KEY=sk-your-key-here
+S3_BUCKET=paper-rag-pdfs
+AWS_REGION=us-east-1
+CROSSREF_EMAIL=your.email@edu  # optional but recommended
 ```
 
 ## 3. Run Database Migrations
@@ -43,9 +58,14 @@ If you have existing PDFs to import:
 
 ```bash
 python scripts/initial_setup.py /path/to/your/pdfs
+
+# For long imports (prevents Mac sleep):
+caffeinate -i python scripts/initial_setup.py /path/to/your/pdfs
 ```
 
-Expected: ~2 minutes per paper, ~$0.015 per paper for embeddings.
+- **Time:** ~30-60 seconds per paper
+- **Cost:** ~$0.015 per paper for embeddings
+- **Resumable:** Re-run the same command if interrupted; already-processed papers are skipped
 
 ## 5. Start the MCP Server
 
@@ -76,9 +96,11 @@ curl -X POST http://localhost:8000/mcp \
 
 ## Using the MCP Tools
 
-### Via MCP Client
+### Network Access Note
 
-Connect any MCP-compatible client to `http://localhost:8000/mcp`.
+**Local development:** The MCP server runs on `localhost:8000` and is only accessible locally. This is sufficient for testing via curl.
+
+**External clients (Claude Desktop, etc.):** Requires deploying the MCP server to AWS where it can access RDS directly. See [setup.md](setup.md#aws-agentcore-deployment).
 
 ### Via curl (for testing)
 
@@ -151,6 +173,15 @@ curl -X POST http://localhost:8000/mcp \
 - Verify PostgreSQL is running
 - Ensure pgvector extension is installed: `CREATE EXTENSION vector;`
 
+**SSH tunnel connection refused (localhost:15432)?**
+- Check if tunnel is running: `ps aux | grep ssh | grep 15432`
+- Restart tunnel with keepalive: see [setup.md](setup.md#bastion-host-setup-for-local-development)
+- Make sure bastion EC2 instance is running
+
+**Tunnel drops overnight?**
+- Use `ServerAliveInterval=60` option in SSH command
+- Use `caffeinate -i` to prevent Mac sleep
+
 **S3 upload failed?**
 - Check AWS credentials (or use IAM role)
 - Verify S3_BUCKET exists
@@ -159,10 +190,10 @@ curl -X POST http://localhost:8000/mcp \
 **OpenAI API Key Not Found?**
 - Check OPENAI_API_KEY is set in .env
 
-**Papers not processing?**
-- Check logs in stdout
-- Verify PDFs are not encrypted
-- Ensure PDF paths are correct
+**Papers not processing / script hangs?**
+- Some PDFs cause metadata extraction to hang
+- System has 60-second timeout and falls back to alternative methods
+- Re-run the script; it will skip already-processed papers
 
 ## Next Steps
 

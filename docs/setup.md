@@ -49,29 +49,33 @@ This installs all required packages including:
 
 ## Step 3: Set Up PostgreSQL
 
-### For AWS RDS
+### For AWS RDS (Private Subnet)
 
-RDS PostgreSQL 15+ has pgvector pre-installed. You just need to enable it:
+If your RDS instance is in a **private subnet** (recommended for security), you cannot connect directly from your local machine. You'll need to set up a bastion host for local development. See [Bastion Host Setup](#bastion-host-setup-for-local-development) below.
+
+If your RDS is in a public subnet (not recommended), you can connect directly:
 
 1. **Connect to your RDS instance** using `psql`:
    ```bash
    psql -h YOUR_RDS_ENDPOINT -U YOUR_USERNAME -d postgres
    ```
-   You'll be prompted for your password.
 
 2. **Enable the pgvector extension**:
    ```sql
    CREATE EXTENSION IF NOT EXISTS vector;
    ```
 
-3. **Create the database** (if it doesn't exist):
+3. **Create the schema and database**:
    ```sql
    CREATE DATABASE paper_rag;
+   \c paper_rag
+   CREATE SCHEMA IF NOT EXISTS paper_rag;
+   CREATE EXTENSION IF NOT EXISTS vector;
    ```
 
 4. Type `\q` to exit psql.
 
-**Note**: Ensure your RDS security group allows inbound connections on port 5432 from your IP address.
+**Important - pgvector Dimension Limit**: AWS RDS pgvector (v0.7.x) limits HNSW/IVFFlat indexes to **2000 dimensions**. This project uses **1536 dimensions** (text-embedding-3-large with reduced dimensions) to stay under this limit while maintaining high embedding quality.
 
 ### For Local Development
 
@@ -97,6 +101,59 @@ RDS PostgreSQL 15+ has pgvector pre-installed. You just need to enable it:
    ```
 
 4. Type `\q` to exit psql.
+
+### Bastion Host Setup (for Local Development with Private RDS)
+
+If your RDS is in a private subnet, you need an EC2 bastion host to create an SSH tunnel for local development.
+
+#### 1. Create EC2 Key Pair
+1. EC2 Console → Key Pairs → Create key pair
+2. Name: `your-bastion-key`, Type: RSA, Format: `.pem`
+3. Move to SSH directory: `mv ~/Downloads/your-bastion-key.pem ~/.ssh/ && chmod 400 ~/.ssh/your-bastion-key.pem`
+
+#### 2. Create Bastion Security Group
+1. EC2 Console → Security Groups → Create
+2. Name: `bastion-sg`, VPC: your VPC
+3. Inbound: SSH (22) from My IP
+
+#### 3. Update RDS Security Group
+1. Find your RDS security group
+2. Add inbound rule: PostgreSQL (5432) from `bastion-sg`
+
+#### 4. Launch Bastion Instance
+1. EC2 Console → Launch instance
+2. AMI: Amazon Linux 2023, Type: t2.micro
+3. Key pair: `your-bastion-key`
+4. Network: Your VPC, **public subnet**, auto-assign public IP: Yes
+5. Security group: `bastion-sg`
+
+#### 5. Create SSH Tunnel
+```bash
+# Basic tunnel (may drop on idle)
+ssh -i ~/.ssh/your-bastion-key.pem \
+    -L 15432:YOUR_RDS_ENDPOINT:5432 \
+    ec2-user@BASTION_PUBLIC_IP -N -f
+
+# Recommended: with keepalive (prevents idle disconnection)
+ssh -i ~/.ssh/your-bastion-key.pem \
+    -o ServerAliveInterval=60 \
+    -o ServerAliveCountMax=3 \
+    -L 15432:YOUR_RDS_ENDPOINT:5432 \
+    ec2-user@BASTION_PUBLIC_IP -N -f
+```
+
+**Note**: Using port 15432 avoids conflicts with local PostgreSQL on 5432.
+
+#### 6. Configure .env for Local Development
+```bash
+# For local development (via SSH tunnel)
+DATABASE_URL=postgresql+asyncpg://user:password@localhost:15432/paper_rag
+
+# For AWS deployment (direct RDS access from within VPC)
+# DATABASE_URL=postgresql+asyncpg://user:password@YOUR_RDS_ENDPOINT:5432/paper_rag
+```
+
+See [bastion-cleanup.md](bastion-cleanup.md) for cleanup instructions when done.
 
 ## Step 4: Run Database Migrations
 
@@ -153,14 +210,29 @@ This will:
 - Upload PDFs to S3
 - Store everything in PostgreSQL
 
-**Expected time:** ~2 minutes per paper
+**Expected time:** ~30-60 seconds per paper (varies by PDF complexity)
 **Expected cost:** ~$0.015 per paper for embeddings
+
+### Long-Running Imports
+
+For large PDF collections, the import can take hours. To prevent issues:
+
+```bash
+# macOS: Prevent sleep during import
+caffeinate -i python scripts/initial_setup.py /path/to/your/pdfs
+```
+
+**The script is resumable**: If interrupted, re-run the same command. Already-processed papers are detected by PDF hash and skipped automatically.
+
+**Problematic PDFs**: Some PDFs may cause the metadata extraction to hang. The system has a 60-second timeout and will fall back to alternative extraction methods.
 
 ## Step 7: Start the MCP Server
 
 ```bash
-python src/mcp_http_server.py
+python -m src.mcp_http_server
 ```
+
+**Note:** Run this from the project root directory. The `-m` flag runs the server as a module, which is required for Python to resolve the internal imports correctly.
 
 The server starts on port 8000 with endpoints:
 - `/mcp` - MCP protocol endpoint
@@ -178,6 +250,7 @@ The server starts on port 8000 with endpoints:
    ```bash
    curl -X POST http://localhost:8000/mcp \
      -H "Content-Type: application/json" \
+     -H "Accept: application/json, text/event-stream" \
      -d '{"jsonrpc":"2.0","method":"tools/list","id":1}'
    ```
 
@@ -185,6 +258,7 @@ The server starts on port 8000 with endpoints:
    ```bash
    curl -X POST http://localhost:8000/mcp \
      -H "Content-Type: application/json" \
+     -H "Accept: application/json, text/event-stream" \
      -d '{
        "jsonrpc":"2.0",
        "method":"tools/call",
@@ -195,22 +269,44 @@ The server starts on port 8000 with endpoints:
 
 ## Connecting MCP Clients
 
-### Claude Desktop (via mcp-remote)
+### Important: Network Architecture Considerations
+
+The MCP server needs network access to both RDS and S3. Where you run the server determines how clients can connect:
+
+| Server Location | RDS Access | Client Access |
+|-----------------|------------|---------------|
+| **Local (with SSH tunnel)** | Via tunnel to private RDS | localhost:8000 only |
+| **AWS (EC2/ECS/AgentCore)** | Direct to private RDS | Public endpoint possible |
+
+**For local development**: Run the MCP server locally with an SSH tunnel to RDS. Only local clients (curl, local scripts) can connect to `localhost:8000`.
+
+**For external access (Claude Desktop, remote clients)**: Deploy the MCP server to AWS where it can access RDS directly. See [AWS AgentCore Deployment](#aws-agentcore-deployment).
+
+### Claude Desktop (requires deployed server)
+
+Claude Desktop cannot connect to a local MCP server that uses a private RDS. You must deploy the server to AWS first, then configure:
 
 ```json
 {
   "mcpServers": {
     "paper-rag": {
       "command": "npx",
-      "args": ["mcp-remote", "http://your-server:8000/mcp"]
+      "args": ["mcp-remote", "https://your-deployed-server/mcp"]
     }
   }
 }
 ```
 
-### Direct HTTP
+### Local Development (localhost only)
 
-Any MCP-compatible client can connect to `http://your-server:8000/mcp`.
+For local testing with the SSH tunnel active:
+
+```bash
+# Test from command line
+curl -X POST http://localhost:8000/mcp \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","method":"tools/list","id":1}'
+```
 
 ## Adding Papers
 
@@ -248,6 +344,20 @@ python scripts/initial_setup.py /path/to/pdf/folder
 - Check PostgreSQL is running
 - Ensure pgvector extension is installed
 
+### SSH Tunnel Issues
+
+**Connection refused on localhost:15432:**
+- Check if tunnel is running: `ps aux | grep ssh | grep 15432`
+- Restart the tunnel (see [Bastion Host Setup](#bastion-host-setup-for-local-development))
+
+**Tunnel drops after idle period:**
+- Use `ServerAliveInterval=60` option (see tunnel command above)
+- For overnight runs, use `caffeinate -i` (macOS) to prevent sleep
+
+**Wrong DATABASE_URL:**
+- Local development: use `localhost:15432` (via tunnel)
+- AWS deployment: use direct RDS endpoint
+
 ### S3 Issues
 - Verify credentials or IAM role
 - Check bucket exists and region matches
@@ -257,6 +367,9 @@ python scripts/initial_setup.py /path/to/pdf/folder
 - Check API key is valid
 - Monitor rate limits
 - Reduce batch_size if hitting limits
+
+### PDF Processing Hangs
+The `pdf2bib` library can hang on certain PDFs when fetching metadata. The system has a 60-second timeout and will fall back to other extraction methods automatically.
 
 See [TROUBLESHOOTING.md](../TROUBLESHOOTING.md) for more details.
 
@@ -363,7 +476,7 @@ uvicorn src.mcp_http_server:create_app --factory --host 0.0.0.0 --port 8000
 python -c "from src.mcp_http_server import run_http_server; run_http_server()"
 
 # Option 3: AgentCore-compatible (no health endpoints)
-python src/mcp_http_server.py
+python -m src.mcp_http_server
 ```
 
 ## Next Steps

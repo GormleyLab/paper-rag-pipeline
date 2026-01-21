@@ -6,18 +6,27 @@
 
 **Issue**: `Connection refused` or `could not connect to server`
 
-**Cause**: PostgreSQL server is not running or connection details are incorrect.
+**Cause**: PostgreSQL server is not running, connection details are incorrect, or SSH tunnel is not active.
 
 **Solution**:
+
+**For local PostgreSQL:**
 1. Verify PostgreSQL is running:
    ```bash
    pg_isready -h localhost -p 5432
    ```
-2. Check DATABASE_URL in `.env`:
+2. Check DATABASE_URL in `.env`
+
+**For AWS RDS via SSH tunnel:**
+1. Check if tunnel is running:
    ```bash
-   DATABASE_URL=postgresql+asyncpg://user:pass@localhost:5432/dbname
+   ps aux | grep ssh | grep 15432
    ```
-3. Verify the database exists and user has access
+2. Verify DATABASE_URL uses tunnel port:
+   ```bash
+   DATABASE_URL=postgresql+asyncpg://user:pass@localhost:15432/paper_rag
+   ```
+3. Restart tunnel if needed (see [SSH Tunnel Issues](#ssh-tunnel-issues) below)
 
 ### pgvector Extension Missing
 
@@ -32,6 +41,61 @@ CREATE EXTENSION IF NOT EXISTS vector;
 ```
 
 For RDS, ensure you're using a version that supports pgvector (PostgreSQL 15+).
+
+### pgvector Dimension Limit
+
+**Issue**: `column cannot have more than 2000 dimensions for hnsw index`
+
+**Cause**: AWS RDS pgvector (v0.7.x) limits HNSW and IVFFlat indexes to 2000 dimensions.
+
+**Solution**: This project uses 1536-dimensional embeddings (text-embedding-3-large with reduced dimensions) to stay under the limit. If you modified the dimensions, ensure `vector_dimension` in settings.py is ≤2000.
+
+### SSH Tunnel Issues
+
+**Issue**: `Connection refused` on localhost:15432
+
+**Cause**: SSH tunnel to bastion host is not running.
+
+**Solution**:
+1. Check if tunnel is active:
+   ```bash
+   ps aux | grep ssh | grep 15432
+   ```
+2. Start the tunnel with keepalive options:
+   ```bash
+   ssh -i ~/.ssh/your-bastion-key.pem \
+       -o ServerAliveInterval=60 \
+       -o ServerAliveCountMax=3 \
+       -L 15432:YOUR_RDS_ENDPOINT:5432 \
+       ec2-user@BASTION_PUBLIC_IP -N -f
+   ```
+3. Verify bastion EC2 instance is running in AWS Console
+
+---
+
+**Issue**: SSH tunnel drops after idle period or overnight
+
+**Cause**: Network timeouts, Mac sleep, or missing keepalive configuration.
+
+**Solution**:
+1. Use `ServerAliveInterval=60` in SSH command (sends keepalive every 60 seconds)
+2. For overnight runs, prevent Mac sleep:
+   ```bash
+   caffeinate -i python scripts/initial_setup.py /path/to/pdfs
+   ```
+3. If bastion was stopped, restart it and note the new public IP
+
+---
+
+**Issue**: Wrong DATABASE_URL for environment
+
+**Cause**: Using direct RDS endpoint locally or tunnel endpoint in AWS.
+
+**Solution**:
+| Environment | DATABASE_URL Host |
+|-------------|-------------------|
+| Local development | `localhost:15432` (via tunnel) |
+| AWS deployment | Direct RDS endpoint |
 
 ### Migration Errors
 
@@ -116,6 +180,34 @@ OPENAI_API_KEY=sk-your-key-here
 3. Try re-downloading the PDF
 4. Large PDFs may need more memory
 
+---
+
+**Issue**: Script hangs on specific PDF during metadata extraction
+
+**Cause**: The `pdf2bib` library can hang indefinitely when fetching metadata from external APIs (CrossRef, etc.) for certain PDFs.
+
+**Solution**: The system has a **60-second timeout** for pdf2bib. If it times out:
+1. The system automatically falls back to alternative extraction methods (CrossRef via DOI, arXiv, PDF metadata, text parsing)
+2. A warning is logged: `pdf2bib timed out after 60s for {filename}`
+3. The paper is still processed using fallback methods
+
+If you see repeated hangs on the same PDF:
+1. Move the problematic PDF temporarily: `mv problem.pdf /tmp/`
+2. Re-run the import script
+3. Add the PDF back later or process it manually
+
+---
+
+**Issue**: Import script interrupted, need to resume
+
+**Cause**: Script was stopped (Ctrl+C, system sleep, tunnel drop, etc.)
+
+**Solution**: Simply re-run the same command:
+```bash
+python scripts/initial_setup.py /path/to/your/pdfs
+```
+The script detects already-processed papers by PDF hash and skips them automatically.
+
 ### Multiprocessing Resource Tracker Warning
 
 **Issue**: Warning about leaked semaphore objects at shutdown
@@ -147,6 +239,19 @@ resource_tracker: There appear to be 1 leaked semaphore objects to clean up at s
 2. Kill existing process or use different port
 3. Verify all required environment variables are set
 4. Check database connectivity
+
+### MCP Client Cannot Connect
+
+**Issue**: Claude Desktop or external MCP client cannot connect to server
+
+**Cause**: The MCP server is running locally with an SSH tunnel to RDS, which only works for local clients.
+
+**Solution**: For external client access, you must deploy the MCP server to AWS:
+- The server needs to run inside the VPC to access RDS directly
+- Deploy via AWS AgentCore, ECS, or EC2
+- See [setup.md](setup.md#aws-agentcore-deployment) for deployment instructions
+
+**For local testing only**: Use curl or local scripts to interact with `http://localhost:8000/mcp`
 
 ### Search Returns No Results
 
