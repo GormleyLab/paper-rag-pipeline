@@ -120,7 +120,9 @@ async def initialize_components():
 
 
 # Create FastMCP server with stateless HTTP
-mcp = FastMCP("paper-rag", stateless_http=True)
+# host="0.0.0.0" is required for container deployments (AgentCore, Docker, etc.)
+# port=8080 is required for AWS AgentCore (default expects 8080)
+mcp = FastMCP("paper-rag", stateless_http=True, host="0.0.0.0", port=8080)
 
 
 @mcp.tool()
@@ -922,7 +924,7 @@ def create_app():
     return starlette_app
 
 
-def run_http_server(host: str = "0.0.0.0", port: int = 8000):
+def run_http_server(host: str = "0.0.0.0", port: int = 8080):
     """
     Run the MCP HTTP server with custom health endpoints.
 
@@ -940,5 +942,5 @@ def run_http_server(host: str = "0.0.0.0", port: int = 8000):
 if __name__ == "__main__":
     # AWS AgentCore compatible entry point
     # Uses mcp.run() which AgentCore expects
-    # Serves on 0.0.0.0:8000 at /mcp endpoint
+    # Serves on 0.0.0.0:8080 at /mcp endpoint (AgentCore expects port 8080)
     mcp.run(transport="streamable-http")
