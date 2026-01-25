@@ -410,11 +410,20 @@ The MCP server is compatible with AWS Bedrock AgentCore deployment.
 
 3. Set up an IAM execution role for the AgentCore runtime.
 
+4. **For VPC mode** (required if RDS is in private subnet): Note your VPC subnet IDs and security group IDs.
+
 ### Deploy to AgentCore
 
 1. **Configure the deployment:**
    ```bash
+   # Basic configuration
    agentcore configure -e src/mcp_http_server.py --protocol MCP
+
+   # With VPC (required for private RDS access)
+   agentcore configure -e src/mcp_http_server.py --protocol MCP \
+     --vpc \
+     --subnets "subnet-xxx,subnet-yyy" \
+     --security-groups "sg-zzz"
    ```
 
    During configuration, you'll be prompted for:
@@ -423,22 +432,59 @@ The MCP server is compatible with AWS Bedrock AgentCore deployment.
    - **Dependencies**: CLI auto-detects `requirements.txt`
    - **OAuth**: Configure if using authentication
 
-2. **Set environment variables** for the runtime:
-   - `DATABASE_URL` - PostgreSQL connection string
-   - `OPENAI_API_KEY` - OpenAI API key
-   - `S3_BUCKET` - S3 bucket name
-   - `AWS_REGION` - AWS region
+2. **Set environment variables** in the generated Dockerfile (`.bedrock_agentcore/{agent}/Dockerfile`):
+   ```dockerfile
+   ENV DATABASE_URL=postgresql+asyncpg://user:pass@rds-endpoint:5432/paper_rag \
+       OPENAI_API_KEY=sk-... \
+       S3_BUCKET=paper-rag-pdfs \
+       AWS_REGION=us-east-1
+   ```
 
-3. **Launch the deployment:**
+   **Important**: The agentcore CLI regenerates the Dockerfile on each configure. Add env vars manually after configuration.
+
+3. **Deploy:**
    ```bash
-   agentcore launch
+   agentcore deploy --auto-update-on-conflict
    ```
 
    This will:
-   - Build a Docker container
+   - Build an ARM64 Docker container via CodeBuild
    - Push to Amazon ECR
-   - Create the AgentCore runtime
+   - Create/update the AgentCore runtime
    - Return the agent runtime ARN
+
+### Important Configuration Notes
+
+- **Port**: The server must listen on port 8000 (FastMCP default). Do not override the port.
+- **Host**: Use `host="0.0.0.0"` in FastMCP for container deployments.
+- **VPC**: If your RDS is in a private subnet, enable VPC mode and ensure the security group allows access to RDS.
+
+### Testing the Deployment
+
+```bash
+# Check status
+agentcore status
+
+# Test with AWS CLI
+PAYLOAD=$(echo -n '{"jsonrpc":"2.0","method":"tools/list","params":{},"id":1}' | base64)
+aws bedrock-agentcore invoke-agent-runtime \
+  --agent-runtime-arn "YOUR_AGENT_ARN" \
+  --qualifier DEFAULT \
+  --content-type "application/json" \
+  --accept "application/json, text/event-stream" \
+  --payload "$PAYLOAD" \
+  output.json && cat output.json
+```
+
+### Troubleshooting Deployment
+
+Check CloudWatch logs if invocations fail:
+```bash
+aws logs tail /aws/bedrock-agentcore/runtimes/{agent-id}-DEFAULT \
+  --log-stream-name-prefix "[runtime-logs]" --since 30m
+```
+
+See [TROUBLESHOOTING.md](TROUBLESHOOTING.md#aws-agentcore-deployment-issues) for common deployment issues.
 
 ### Connecting to Deployed Server
 

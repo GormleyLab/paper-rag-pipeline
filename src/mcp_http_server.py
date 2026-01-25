@@ -121,8 +121,8 @@ async def initialize_components():
 
 # Create FastMCP server with stateless HTTP
 # host="0.0.0.0" is required for container deployments (AgentCore, Docker, etc.)
-# port=8080 is required for AWS AgentCore (default expects 8080)
-mcp = FastMCP("paper-rag", stateless_http=True, host="0.0.0.0", port=8080)
+# Default port (8000) is used - matches Dockerfile EXPOSE and AWS AgentCore default
+mcp = FastMCP("paper-rag", stateless_http=True, host="0.0.0.0")
 
 
 @mcp.tool()

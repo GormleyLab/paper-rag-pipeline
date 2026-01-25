@@ -253,6 +253,45 @@ resource_tracker: There appear to be 1 leaked semaphore objects to clean up at s
 
 **For local testing only**: Use curl or local scripts to interact with `http://localhost:8000/mcp`
 
+### AWS AgentCore Deployment Issues
+
+**Issue**: Container fails to start with `-32603` internal error and mismatched JSON-RPC ID
+
+**Possible Causes**:
+
+1. **Port mismatch**: FastMCP configured with wrong port
+   - AWS AgentCore expects port 8000 (default)
+   - Check `mcp_http_server.py` doesn't specify `port=8080` or other non-default port
+   - FastMCP constructor should be: `FastMCP("paper-rag", stateless_http=True, host="0.0.0.0")`
+
+2. **pdf2bib permission error**: Container runs as non-root user
+   - The `pdf2bib` library tries to write `settings.ini` on import
+   - This fails with `PermissionError` in containerized environments
+   - Check CloudWatch logs for: `PermissionError: [Errno 13] Permission denied: .../pdf2bib/settings.ini`
+
+**Solution**: The codebase handles these issues:
+- Port defaults to 8000 (matches Dockerfile EXPOSE and AgentCore)
+- pdf2bib import is lazy and catches PermissionError gracefully
+- Metadata extraction falls back to other methods if pdf2bib is unavailable
+
+**Debugging tips**:
+1. Check CloudWatch logs: `/aws/bedrock-agentcore/runtimes/{agent-id}-DEFAULT`
+2. Look for runtime-logs stream (not just otel-rt-logs)
+3. If ID mismatch in error response, the issue is before the container starts
+4. Test locally first: `python -m src.mcp_http_server`
+
+---
+
+**Issue**: AgentCore shows READY but invocations fail
+
+**Cause**: Container crashes on startup before processing any requests.
+
+**Solution**:
+1. Check CloudWatch logs for Python tracebacks
+2. Verify environment variables are set in Dockerfile (DATABASE_URL, OPENAI_API_KEY, S3_BUCKET)
+3. Test container locally if possible
+4. Re-deploy with `agentcore deploy --auto-update-on-conflict`
+
 ### Search Returns No Results
 
 **Issue**: `search_papers` returns empty results
