@@ -45,3 +45,6 @@ typing-extensions>=4.0.0
 # ASGI Server
 uvicorn>=0.24.0
 starlette>=0.27.0
+
+# MCP Client Testing (optional - for test_paperrag_mcp.py)
+anthropic>=0.70.0

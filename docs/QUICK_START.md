@@ -69,28 +69,38 @@ caffeinate -i python scripts/initial_setup.py /path/to/your/pdfs
 
 ## 5. Start the MCP Server
 
-**For local development (with health endpoints):**
+**For local development:**
 ```bash
-uvicorn src.mcp_http_server:create_app --factory --host 0.0.0.0 --port 8000
+python -m src.mcp_http_server
 ```
 
-**For AWS AgentCore compatible mode:**
+**For local development with API key authentication:**
 ```bash
-python src/mcp_http_server.py
+PAPERRAG_API_KEY=test-key python -m src.mcp_http_server
 ```
 
-The server starts on port 8000 at `/mcp` endpoint.
+The server starts on port 8080 (configurable via PORT env var) at `/mcp` endpoint.
+
+**For AWS App Runner deployment:** See [setup.md](setup.md#aws-app-runner-deployment-recommended).
 
 ## 6. Test the Server
 
 ```bash
-# Health check (only available with uvicorn method above)
-curl http://localhost:8000/health
+# Health check (no auth required)
+curl http://localhost:8080/health
 # Returns: {"status": "ok", "service": "paper-rag"}
 
-# List MCP tools (works with both methods)
-curl -X POST http://localhost:8000/mcp \
+# List MCP tools (no auth if PAPERRAG_API_KEY not set)
+curl -X POST http://localhost:8080/mcp \
   -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -d '{"jsonrpc":"2.0","method":"tools/list","id":1}'
+
+# With API key authentication enabled
+curl -X POST http://localhost:8080/mcp \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Accept: application/json, text/event-stream" \
   -d '{"jsonrpc":"2.0","method":"tools/list","id":1}'
 ```
 
@@ -98,21 +108,53 @@ curl -X POST http://localhost:8000/mcp \
 
 ### Network Access Note
 
-**Local development:** The MCP server runs on `localhost:8000` and is only accessible locally. This is sufficient for testing via curl.
+**Local development:** The MCP server runs on `localhost:8080` and is only accessible locally. This is sufficient for testing via curl.
 
-**External clients (Claude Desktop, etc.):** Requires deploying the MCP server to AWS where it can access RDS directly. See [setup.md](setup.md#aws-agentcore-deployment).
+**External clients (Claude Desktop, etc.):** Connect to the deployed App Runner service.
+
+### Connect to Deployed Service (App Runner)
+
+**Production URL**: `https://m76rjhx9i3.us-east-1.awsapprunner.com`
+
+```bash
+# Get your API key (save to .env as PAPERRAG_API_KEY)
+aws secretsmanager get-secret-value --secret-id paperrag/api-key --query SecretString --output text --region us-east-1
+
+# Test the deployed service
+curl -X POST https://m76rjhx9i3.us-east-1.awsapprunner.com/mcp \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $PAPERRAG_API_KEY" \
+  -H "Accept: application/json, text/event-stream" \
+  -d '{"jsonrpc":"2.0","method":"tools/call","params":{"name":"database_stats","arguments":{}},"id":1}'
+```
+
+Python MCP client configuration:
+```python
+import os
+
+mcp_servers = [
+    {
+        "type": "url",
+        "url": "https://m76rjhx9i3.us-east-1.awsapprunner.com/mcp",
+        "name": "paper-rag",
+        "authorization_token": os.environ.get("PAPERRAG_API_KEY"),
+    }
+]
+```
 
 ### Via curl (for testing)
 
 ```bash
 # List tools
-curl -X POST http://localhost:8000/mcp \
+curl -X POST http://localhost:8080/mcp \
   -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
   -d '{"jsonrpc":"2.0","method":"tools/list","id":1}'
 
 # Get database stats
-curl -X POST http://localhost:8000/mcp \
+curl -X POST http://localhost:8080/mcp \
   -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
   -d '{
     "jsonrpc":"2.0",
     "method":"tools/call",
@@ -121,8 +163,9 @@ curl -X POST http://localhost:8000/mcp \
   }'
 
 # Search papers
-curl -X POST http://localhost:8000/mcp \
+curl -X POST http://localhost:8080/mcp \
   -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
   -d '{
     "jsonrpc":"2.0",
     "method":"tools/call",

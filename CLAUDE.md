@@ -4,9 +4,15 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Paper RAG Pipeline - A RAG system for academic research paper management designed for AWS AgentCore deployment. Combines Docling (PDF processing), PostgreSQL + pgvector (vector storage), OpenAI embeddings, AWS S3 (PDF storage), and MCP (Model Context Protocol) to provide intelligent paper search and citation management.
+Paper RAG Pipeline - A RAG system for academic research paper management. Combines Docling (PDF processing), PostgreSQL + pgvector (vector storage), OpenAI embeddings, AWS S3 (PDF storage), and MCP (Model Context Protocol) to provide intelligent paper search and citation management.
 
 **Architecture**: PostgreSQL + pgvector for vector storage, S3 for PDF storage, MCP over HTTP for tool access.
+
+**Deployment Options**:
+- AWS App Runner (Recommended) - Static API key authentication, simple deployment
+- AWS AgentCore - SigV4/Cognito authentication for Bedrock integration
+
+**Production URL**: `https://m76rjhx9i3.us-east-1.awsapprunner.com` (API key required, stored in `PAPERRAG_API_KEY` env var)
 
 **Output Structure**: For each processed PDF, the system:
 - Stores vector embeddings in PostgreSQL with pgvector
@@ -30,7 +36,7 @@ alembic upgrade head
 python scripts/initial_setup.py /path/to/pdf/folder
 
 # Run the MCP HTTP server
-python src/mcp_http_server.py
+python -m src.mcp_http_server
 ```
 
 ## Environment Variables
@@ -41,6 +47,10 @@ DATABASE_URL=postgresql+asyncpg://user:pass@host:5432/dbname
 OPENAI_API_KEY=sk-...
 S3_BUCKET=paper-rag-pdfs
 AWS_REGION=us-east-1
+
+# For App Runner deployment
+PAPERRAG_API_KEY=...           # Enables Bearer token authentication
+PORT=8080                      # Server port (default: 8080)
 
 # Optional
 CROSSREF_EMAIL=your@email.com  # Recommended for CrossRef API
@@ -61,10 +71,11 @@ AWS_SECRET_ACCESS_KEY=...      # If not using IAM role
 ### Component Responsibilities
 
 **`src/mcp_http_server.py`** - MCP HTTP server (main entry point)
-- FastMCP with streamable HTTP transport (port 8000)
+- FastMCP with streamable HTTP transport (port 8080, configurable via PORT)
 - Implements 10 async tool handlers for MCP clients
 - Lazy initialization of all components
 - Health check endpoints at `/health` and `/ping`
+- API key authentication middleware (when PAPERRAG_API_KEY is set)
 
 **`src/core/settings.py`** - Configuration management
 - Pydantic Settings for environment variable loading

@@ -49,6 +49,9 @@ class Settings(BaseSettings):
     server_port: int = 8000
     log_level: str = "INFO"
 
+    # API Key Authentication (for App Runner deployment)
+    paperrag_api_key: Optional[str] = None
+
     # Bibliography
     default_bib_output: str = "./references.bib"
     bibtex_entry_type: str = "article"

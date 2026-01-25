@@ -1,6 +1,12 @@
 # Paper RAG Pipeline for Research & Citation Management
 
-A RAG (Retrieval Augmented Generation) system designed for academic research paper management, built for AWS AgentCore deployment. Combines advanced document processing (Docling), vector search (PostgreSQL + pgvector), AWS S3 storage, and AI assistance via MCP (Model Context Protocol) to enable intelligent citation management, contextual paper retrieval, and automated bibliography generation.
+A RAG (Retrieval Augmented Generation) system designed for academic research paper management. Combines advanced document processing (Docling), vector search (PostgreSQL + pgvector), AWS S3 storage, and AI assistance via MCP (Model Context Protocol) to enable intelligent citation management, contextual paper retrieval, and automated bibliography generation.
+
+**Deployment Options:**
+- **AWS App Runner** (Recommended): Simple static API key authentication, ~$5-15/month
+- **AWS AgentCore**: SigV4/Cognito authentication for Bedrock integration
+
+**Production URL**: `https://m76rjhx9i3.us-east-1.awsapprunner.com` (requires API key)
 
 ## Features
 
@@ -51,11 +57,12 @@ A RAG (Retrieval Augmented Generation) system designed for academic research pap
 
 6. **Start the MCP HTTP server**
    ```bash
-   # For local development (with health endpoints)
-   uvicorn src.mcp_http_server:create_app --factory --host 0.0.0.0 --port 8000
+   # For local development
+   python -m src.mcp_http_server
 
-   # For AWS AgentCore deployment
-   python src/mcp_http_server.py
+   # For App Runner deployment (uses PORT env var, default 8080)
+   # Set PAPERRAG_API_KEY to enable authentication
+   PAPERRAG_API_KEY=your-key python -m src.mcp_http_server
    ```
 
 ## Environment Variables
@@ -66,6 +73,9 @@ DATABASE_URL=postgresql+asyncpg://user:pass@host:5432/dbname
 OPENAI_API_KEY=sk-your-openai-key
 S3_BUCKET=paper-rag-pdfs
 AWS_REGION=us-east-1
+
+# For App Runner deployment
+PAPERRAG_API_KEY=your-api-key  # Enables Bearer token authentication
 
 # Optional
 CROSSREF_EMAIL=your.email@university.edu
@@ -93,6 +103,46 @@ paper-rag-pipeline/
 ├── scripts/                       # Utility scripts
 ├── docs/                          # Documentation
 └── requirements.txt               # Python dependencies
+```
+
+## Connecting to Deployed Service
+
+### Python MCP Client
+
+```python
+import os
+
+mcp_servers = [
+    {
+        "type": "url",
+        "url": "https://m76rjhx9i3.us-east-1.awsapprunner.com/mcp",
+        "name": "paper-rag",
+        "authorization_token": os.environ.get("PAPERRAG_API_KEY"),
+    }
+]
+```
+
+### curl (testing)
+
+```bash
+# Set your API key (from AWS Secrets Manager or .env)
+export PAPERRAG_API_KEY="your-api-key"
+
+# Test database stats
+curl -X POST https://m76rjhx9i3.us-east-1.awsapprunner.com/mcp \
+    -H "Content-Type: application/json" \
+    -H "Authorization: Bearer $PAPERRAG_API_KEY" \
+    -H "Accept: application/json, text/event-stream" \
+    -d '{"jsonrpc":"2.0","method":"tools/call","params":{"name":"database_stats","arguments":{}},"id":1}'
+```
+
+### Get API Key
+
+```bash
+aws secretsmanager get-secret-value \
+    --secret-id paperrag/api-key \
+    --query SecretString --output text \
+    --region us-east-1
 ```
 
 ## Usage
@@ -154,12 +204,14 @@ Show me information about the Wang2024 paper
 
 ## Development Roadmap
 
-### Current (AWS AgentCore)
+### Current (v2.1 - App Runner)
 - PostgreSQL + pgvector vector storage
 - AWS S3 PDF storage
-- MCP HTTP server
+- MCP HTTP server with API key authentication
 - 10 MCP tools
 - Async operations throughout
+- AWS App Runner deployment (recommended)
+- AWS AgentCore deployment (alternative)
 
 ### Phase 2: Enhanced Features
 - URL-based paper addition
@@ -201,5 +253,5 @@ Built for the Gormley Lab at Rutgers University for streamlining grant writing a
 
 ---
 
-**Version:** 2.0 (AWS AgentCore)
+**Version:** 2.1 (App Runner + API Key Auth)
 **Status:** Production Ready

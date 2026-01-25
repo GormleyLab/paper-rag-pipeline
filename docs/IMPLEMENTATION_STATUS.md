@@ -1,6 +1,6 @@
 # Implementation Status - Paper RAG Pipeline
 
-**Version:** 2.0.0 (AWS AgentCore)
+**Version:** 2.1.0 (AWS App Runner)
 **Date:** January 2025
 **Status:** Production Ready
 
@@ -8,7 +8,14 @@
 
 ## Summary
 
-The Paper RAG Pipeline has been refactored for AWS AgentCore deployment with PostgreSQL + pgvector for vector storage and AWS S3 for PDF storage. The system provides intelligent search and citation management through MCP over HTTP.
+The Paper RAG Pipeline provides intelligent search and citation management through MCP over HTTP. Supports two deployment options:
+- **AWS App Runner** (Recommended): Static API key authentication, simple deployment
+- **AWS AgentCore**: SigV4/Cognito authentication for Bedrock integration
+
+The system uses PostgreSQL + pgvector for vector storage and AWS S3 for PDF storage.
+
+**Production URL**: `https://m76rjhx9i3.us-east-1.awsapprunner.com`
+**API Key**: Store in `.env` as `PAPERRAG_API_KEY` (retrieve from AWS Secrets Manager: `paperrag/api-key`)
 
 ## Architecture
 
@@ -133,13 +140,16 @@ DATABASE_URL          # PostgreSQL connection string
 OPENAI_API_KEY        # OpenAI API key
 S3_BUCKET             # S3 bucket name
 AWS_REGION            # AWS region
+PAPERRAG_API_KEY      # API key for authentication (App Runner)
 CROSSREF_EMAIL        # Optional, for CrossRef API
+PORT                  # Server port (default: 8080)
 ```
 
 ### Server Settings
-- Port: 8000
+- Port: 8080 (configurable via PORT env var)
 - Endpoints: `/mcp`, `/health`, `/ping`
 - Transport: Streamable HTTP
+- Authentication: Bearer token (when PAPERRAG_API_KEY is set)
 
 ---
 
@@ -212,16 +222,30 @@ paper-rag-pipeline/
 
 ## Deployment Checklist
 
+### Local Development
 1. [ ] Install dependencies: `pip install -r requirements.txt`
 2. [ ] Configure `.env` with required variables
 3. [ ] Set up PostgreSQL with pgvector
 4. [ ] Create S3 bucket
 5. [ ] Run migrations: `alembic upgrade head`
-6. [ ] Start server:
-   - Local: `uvicorn src.mcp_http_server:create_app --factory --host 0.0.0.0 --port 8000`
-   - AgentCore: `agentcore configure -e src/mcp_http_server.py --protocol MCP && agentcore launch`
-7. [ ] Verify: `curl http://localhost:8000/mcp -X POST -H "Content-Type: application/json" -d '{"jsonrpc":"2.0","method":"tools/list","id":1}'`
+6. [ ] Start server: `python -m src.mcp_http_server`
+7. [ ] Verify: `curl http://localhost:8080/health`
 8. [ ] Test tools via MCP client
+
+### AWS App Runner (Recommended)
+1. [ ] Create ECR repository: `aws ecr create-repository --repository-name paperrag-apprunner`
+2. [ ] Build and push Docker image (AMD64): `docker buildx build --platform linux/amd64 -f apprunner/Dockerfile --push .`
+3. [ ] Create API key in Secrets Manager: `paperrag/api-key`
+4. [ ] Create VPC Connector for RDS access
+5. [ ] Create IAM roles (ECR access + instance role)
+6. [ ] Create App Runner service with secrets configuration
+7. [ ] Verify health: `curl https://SERVICE_URL/health`
+8. [ ] Test authenticated request with API key
+
+### AWS AgentCore (Alternative)
+1. [ ] `agentcore configure -e src/mcp_http_server.py --protocol MCP`
+2. [ ] Configure VPC subnets and security groups
+3. [ ] `agentcore deploy --auto-update-on-conflict`
 
 ---
 

@@ -253,6 +253,61 @@ resource_tracker: There appear to be 1 leaked semaphore objects to clean up at s
 
 **For local testing only**: Use curl or local scripts to interact with `http://localhost:8000/mcp`
 
+### AWS App Runner Deployment Issues
+
+**Issue**: 401 Unauthorized on all requests
+
+**Cause**: Missing or invalid API key in Authorization header.
+
+**Solution**:
+1. Verify API key is set in Secrets Manager:
+   ```bash
+   aws secretsmanager get-secret-value --secret-id paperrag/api-key --query SecretString
+   ```
+2. Include `Authorization: Bearer <key>` header in requests
+3. Check App Runner service has `PAPERRAG_API_KEY` in RuntimeEnvironmentSecrets
+
+---
+
+**Issue**: App Runner service fails to start
+
+**Cause**: Database connection, missing secrets, or VPC configuration issues.
+
+**Solution**:
+1. Check App Runner service logs in AWS Console
+2. Verify VPC Connector is correctly configured with subnets that can reach RDS
+3. Ensure security groups allow traffic from App Runner to RDS on port 5432
+4. Verify all secrets are accessible (DATABASE_URL, OPENAI_API_KEY, PAPERRAG_API_KEY)
+
+---
+
+**Issue**: Cold start taking too long (>10 seconds)
+
+**Cause**: Container initialization overhead.
+
+**Solution**:
+1. This is normal for scale-to-zero; first request after idle has ~2-3s cold start
+2. For lower latency, configure minimum instances in App Runner (increases cost)
+3. Consider using health check pings to keep warm if needed
+
+---
+
+**Issue**: 502 Bad Gateway after deployment
+
+**Cause**: Health check failing or application crash on startup.
+
+**Solution**:
+1. Check that health endpoint `/health` is accessible (no auth required)
+2. Verify PORT environment variable is used (default 8080)
+3. Check CloudWatch logs for Python errors
+4. Test container locally first:
+   ```bash
+   docker run -p 8080:8080 -e PORT=8080 -e DATABASE_URL=... your-image
+   curl http://localhost:8080/health
+   ```
+
+---
+
 ### AWS AgentCore Deployment Issues
 
 **Issue**: Container fails to start with `-32603` internal error and mismatched JSON-RPC ID

@@ -7,13 +7,16 @@ Uses FastMCP with Streamable HTTP transport.
 import base64
 import json
 import logging
+import os
+import secrets
 import sys
 import tempfile
 from pathlib import Path
 from typing import Optional
 
 from mcp.server.fastmcp import FastMCP
-from starlette.responses import JSONResponse
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 
 # Import existing components
@@ -900,6 +903,39 @@ async def delete_paper(bibtex_key: str, delete_s3: bool = True) -> str:
     return "\n".join(output_lines)
 
 
+class APIKeyAuthMiddleware(BaseHTTPMiddleware):
+    """Validates Authorization: Bearer <api_key> header for API authentication."""
+
+    EXEMPT_PATHS = {"/health", "/ping", "/"}
+
+    def __init__(self, app, api_key: str):
+        super().__init__(app)
+        self.api_key = api_key
+
+    async def dispatch(self, request, call_next):
+        # Allow health checks without auth
+        if request.url.path in self.EXEMPT_PATHS:
+            return await call_next(request)
+
+        auth_header = request.headers.get("Authorization", "")
+        if not auth_header.startswith("Bearer "):
+            return Response(
+                content='{"error": "Missing Authorization: Bearer <key> header"}',
+                status_code=401,
+                media_type="application/json",
+            )
+
+        token = auth_header[7:]  # Remove "Bearer " prefix
+        if not secrets.compare_digest(token, self.api_key):
+            return Response(
+                content='{"error": "Invalid API key"}',
+                status_code=401,
+                media_type="application/json",
+            )
+
+        return await call_next(request)
+
+
 def create_app():
     """
     Create and return the Starlette app with MCP server and health endpoints.
@@ -909,6 +945,8 @@ def create_app():
 
     Or with run_http_server():
         python -c "from src.mcp_http_server import run_http_server; run_http_server()"
+
+    For App Runner deployment, set PAPERRAG_API_KEY to enable authentication.
     """
     # Get the underlying Starlette app from FastMCP
     starlette_app = mcp.streamable_http_app()
@@ -921,18 +959,30 @@ def create_app():
     starlette_app.routes.append(Route("/health", health, methods=["GET"]))
     starlette_app.routes.append(Route("/ping", health, methods=["GET"]))
 
+    # Add API key authentication if configured
+    api_key = os.environ.get("PAPERRAG_API_KEY")
+    if api_key:
+        logger.info("API key authentication enabled")
+        starlette_app = APIKeyAuthMiddleware(starlette_app, api_key)
+    else:
+        logger.warning("PAPERRAG_API_KEY not set - authentication disabled")
+
     return starlette_app
 
 
-def run_http_server(host: str = "0.0.0.0", port: int = 8080):
+def run_http_server(host: str = "0.0.0.0", port: Optional[int] = None):
     """
     Run the MCP HTTP server with custom health endpoints.
 
-    For local testing only. For AWS AgentCore deployment, use:
-        agentcore configure -e src/mcp_http_server.py --protocol MCP
-        agentcore launch
+    For local testing:
+        python -c "from src.mcp_http_server import run_http_server; run_http_server()"
+
+    For App Runner deployment, set PORT and PAPERRAG_API_KEY environment variables.
     """
     import uvicorn
+
+    if port is None:
+        port = int(os.environ.get("PORT", 8080))
 
     logger.info(f"Starting MCP HTTP server on {host}:{port}")
     app = create_app()
@@ -940,7 +990,11 @@ def run_http_server(host: str = "0.0.0.0", port: int = 8080):
 
 
 if __name__ == "__main__":
-    # AWS AgentCore compatible entry point
-    # Uses mcp.run() which AgentCore expects
-    # Serves on 0.0.0.0:8080 at /mcp endpoint (AgentCore expects port 8080)
-    mcp.run(transport="streamable-http")
+    # App Runner compatible entry point
+    # Uses create_app() which includes API key authentication middleware
+    # Reads PORT from environment variable (default: 8080)
+    import uvicorn
+
+    port = int(os.environ.get("PORT", 8080))
+    logger.info(f"Starting MCP HTTP server on 0.0.0.0:{port}")
+    uvicorn.run(create_app(), host="0.0.0.0", port=port)

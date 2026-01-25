@@ -1,6 +1,6 @@
 # Setup Guide - Paper RAG Pipeline
 
-This guide walks you through setting up the Paper RAG Pipeline for AWS AgentCore deployment.
+This guide walks you through setting up the Paper RAG Pipeline. The recommended deployment is AWS App Runner with static API key authentication.
 
 ## Prerequisites
 
@@ -276,25 +276,53 @@ The MCP server needs network access to both RDS and S3. Where you run the server
 | Server Location | RDS Access | Client Access |
 |-----------------|------------|---------------|
 | **Local (with SSH tunnel)** | Via tunnel to private RDS | localhost:8000 only |
-| **AWS (EC2/ECS/AgentCore)** | Direct to private RDS | Public endpoint possible |
+| **AWS App Runner** | Direct to private RDS via VPC | Public HTTPS endpoint |
+| **AWS AgentCore** | Direct to private RDS via VPC | SigV4/Cognito authenticated |
 
 **For local development**: Run the MCP server locally with an SSH tunnel to RDS. Only local clients (curl, local scripts) can connect to `localhost:8000`.
 
-**For external access (Claude Desktop, remote clients)**: Deploy the MCP server to AWS where it can access RDS directly. See [AWS AgentCore Deployment](#aws-agentcore-deployment).
+**For external access (Claude Desktop, remote clients)**: Deploy the MCP server to AWS App Runner (recommended) or AgentCore. See [AWS App Runner Deployment](#aws-app-runner-deployment-recommended).
 
-### Claude Desktop (requires deployed server)
+### Claude Desktop / Claude Code (App Runner - Recommended)
 
-Claude Desktop cannot connect to a local MCP server that uses a private RDS. You must deploy the server to AWS first, then configure:
+**Production App Runner URL**: `https://m76rjhx9i3.us-east-1.awsapprunner.com`
 
+Configure your MCP client with the API key from your `.env` file (set `PAPERRAG_API_KEY`):
+
+```python
+import os
+
+# Python MCP client configuration
+mcp_servers = [
+    {
+        "type": "url",
+        "url": "https://m76rjhx9i3.us-east-1.awsapprunner.com/mcp",
+        "name": "paper-rag",
+        "authorization_token": os.environ.get("PAPERRAG_API_KEY"),
+    }
+]
+```
+
+For Claude Desktop with mcp-remote (set PAPERRAG_API_KEY in your shell environment):
 ```json
 {
   "mcpServers": {
     "paper-rag": {
       "command": "npx",
-      "args": ["mcp-remote", "https://your-deployed-server/mcp"]
+      "args": [
+        "mcp-remote",
+        "https://m76rjhx9i3.us-east-1.awsapprunner.com/mcp",
+        "--header",
+        "Authorization: Bearer ${PAPERRAG_API_KEY}"
+      ]
     }
   }
 }
+```
+
+**Getting your API key**: Retrieve from AWS Secrets Manager:
+```bash
+aws secretsmanager get-secret-value --secret-id paperrag/api-key --query SecretString --output text --region us-east-1
 ```
 
 ### Local Development (localhost only)
@@ -305,6 +333,7 @@ For local testing with the SSH tunnel active:
 # Test from command line
 curl -X POST http://localhost:8000/mcp \
   -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
   -d '{"jsonrpc":"2.0","method":"tools/list","id":1}'
 ```
 
@@ -395,9 +424,222 @@ See [TROUBLESHOOTING.md](../TROUBLESHOOTING.md) for more details.
 - PDFs stored in S3 with server-side encryption
 - Database should use SSL in production
 
-## AWS AgentCore Deployment
+## AWS App Runner Deployment (Recommended)
 
-The MCP server is compatible with AWS Bedrock AgentCore deployment.
+App Runner provides a simpler deployment with static API key authentication. This is the recommended approach for most use cases.
+
+### Benefits over AgentCore
+- **Static API key**: Never expires, works with any MCP client
+- **Fast cold starts**: ~2-3 seconds
+- **Simpler authentication**: Standard `Authorization: Bearer <key>` header
+- **Lower cost**: ~$5-15/month with scale-to-zero
+
+### Prerequisites
+
+1. Docker installed locally (for building images)
+2. AWS CLI configured with appropriate permissions
+3. ECR repository for container images
+
+### Step 1: Create API Key Secret
+
+```bash
+# Generate and store API key
+API_KEY=$(openssl rand -base64 32)
+echo "Save this API key securely: $API_KEY"
+
+aws secretsmanager create-secret \
+    --name "paperrag/api-key" \
+    --secret-string "$API_KEY" \
+    --region us-east-1
+```
+
+### Step 2: Create Security Group
+
+```bash
+# Create security group for App Runner
+aws ec2 create-security-group \
+    --group-name "apprunner-paperrag-sg" \
+    --description "Security group for Paper RAG App Runner" \
+    --vpc-id "YOUR_VPC_ID" \
+    --region us-east-1
+# Note the returned GroupId
+
+# Allow App Runner to access RDS
+aws ec2 authorize-security-group-ingress \
+    --group-id YOUR_RDS_SECURITY_GROUP \
+    --protocol tcp \
+    --port 5432 \
+    --source-group APPRUNNER_SG_ID \
+    --region us-east-1
+```
+
+### Step 3: Create VPC Connector
+
+```bash
+aws apprunner create-vpc-connector \
+    --vpc-connector-name "paperrag-vpc-connector" \
+    --subnets "subnet-xxx" "subnet-yyy" \
+    --security-groups "APPRUNNER_SG_ID" \
+    --region us-east-1
+# Note the VpcConnectorArn
+```
+
+### Step 4: Create IAM Roles
+
+**ECR Access Role:**
+```bash
+aws iam create-role \
+    --role-name "AppRunnerECRAccessRole" \
+    --assume-role-policy-document '{
+        "Version": "2012-10-17",
+        "Statement": [{
+            "Effect": "Allow",
+            "Principal": {"Service": "build.apprunner.amazonaws.com"},
+            "Action": "sts:AssumeRole"
+        }]
+    }'
+
+aws iam attach-role-policy \
+    --role-name "AppRunnerECRAccessRole" \
+    --policy-arn "arn:aws:iam::aws:policy/service-role/AWSAppRunnerServicePolicyForECRAccess"
+```
+
+**Instance Role:**
+```bash
+aws iam create-role \
+    --role-name "AppRunnerPaperRAGInstanceRole" \
+    --assume-role-policy-document '{
+        "Version": "2012-10-17",
+        "Statement": [{
+            "Effect": "Allow",
+            "Principal": {"Service": "tasks.apprunner.amazonaws.com"},
+            "Action": "sts:AssumeRole"
+        }]
+    }'
+
+aws iam put-role-policy \
+    --role-name "AppRunnerPaperRAGInstanceRole" \
+    --policy-name "PaperRAGPermissions" \
+    --policy-document '{
+        "Version": "2012-10-17",
+        "Statement": [
+            {
+                "Effect": "Allow",
+                "Action": ["s3:PutObject", "s3:GetObject", "s3:DeleteObject", "s3:HeadObject"],
+                "Resource": "arn:aws:s3:::paper-rag-pdfs/*"
+            },
+            {
+                "Effect": "Allow",
+                "Action": ["secretsmanager:GetSecretValue"],
+                "Resource": [
+                    "arn:aws:secretsmanager:us-east-1:ACCOUNT_ID:secret:geppetto-production/*",
+                    "arn:aws:secretsmanager:us-east-1:ACCOUNT_ID:secret:paperrag/*"
+                ]
+            }
+        ]
+    }'
+```
+
+### Step 5: Build and Push Docker Image
+
+```bash
+cd /path/to/paper-rag-pipeline
+
+# Create ECR repository
+aws ecr create-repository \
+    --repository-name "paperrag-apprunner" \
+    --region us-east-1
+
+# Login to ECR
+aws ecr get-login-password --region us-east-1 | \
+    docker login --username AWS --password-stdin ACCOUNT_ID.dkr.ecr.us-east-1.amazonaws.com
+
+# Build for AMD64 (App Runner requirement)
+docker buildx build \
+    --platform linux/amd64 \
+    -t ACCOUNT_ID.dkr.ecr.us-east-1.amazonaws.com/paperrag-apprunner:latest \
+    -f apprunner/Dockerfile \
+    --push .
+```
+
+### Step 6: Create App Runner Service
+
+```bash
+aws apprunner create-service \
+    --service-name "paperrag-mcp" \
+    --source-configuration '{
+        "ImageRepository": {
+            "ImageIdentifier": "ACCOUNT_ID.dkr.ecr.us-east-1.amazonaws.com/paperrag-apprunner:latest",
+            "ImageRepositoryType": "ECR",
+            "ImageConfiguration": {
+                "Port": "8080",
+                "RuntimeEnvironmentSecrets": {
+                    "DATABASE_URL": "arn:aws:secretsmanager:us-east-1:ACCOUNT_ID:secret:geppetto-production/database-url",
+                    "OPENAI_API_KEY": "arn:aws:secretsmanager:us-east-1:ACCOUNT_ID:secret:geppetto-production/openai-api-key",
+                    "PAPERRAG_API_KEY": "arn:aws:secretsmanager:us-east-1:ACCOUNT_ID:secret:paperrag/api-key"
+                },
+                "RuntimeEnvironmentVariables": {
+                    "S3_BUCKET": "paper-rag-pdfs",
+                    "AWS_REGION": "us-east-1"
+                }
+            }
+        },
+        "AuthenticationConfiguration": {
+            "AccessRoleArn": "arn:aws:iam::ACCOUNT_ID:role/AppRunnerECRAccessRole"
+        }
+    }' \
+    --instance-configuration '{
+        "Cpu": "1024",
+        "Memory": "2048",
+        "InstanceRoleArn": "arn:aws:iam::ACCOUNT_ID:role/AppRunnerPaperRAGInstanceRole"
+    }' \
+    --network-configuration '{
+        "EgressConfiguration": {
+            "EgressType": "VPC",
+            "VpcConnectorArn": "VPC_CONNECTOR_ARN"
+        }
+    }' \
+    --health-check-configuration '{
+        "Protocol": "HTTP",
+        "Path": "/health",
+        "Interval": 10,
+        "Timeout": 5,
+        "HealthyThreshold": 1,
+        "UnhealthyThreshold": 5
+    }' \
+    --region us-east-1
+```
+
+### Step 7: Verify Deployment
+
+```bash
+# Get service URL from AWS Console or CLI output
+
+# Test health endpoint (no auth required)
+curl https://SERVICE_URL/health
+# Expected: {"status": "ok", "service": "paper-rag"}
+
+# Test authenticated request
+API_KEY=$(aws secretsmanager get-secret-value \
+    --secret-id paperrag/api-key \
+    --query SecretString --output text)
+
+curl -X POST https://SERVICE_URL/mcp \
+    -H "Content-Type: application/json" \
+    -H "Authorization: Bearer $API_KEY" \
+    -H "Accept: application/json, text/event-stream" \
+    -d '{"jsonrpc":"2.0","method":"tools/list","id":1}'
+```
+
+### Cold Start Behavior
+
+App Runner scales to zero after idle periods. First request after idle will have ~2-3 second cold start. Subsequent requests are fast.
+
+---
+
+## AWS AgentCore Deployment (Alternative)
+
+AgentCore is an alternative deployment option using SigV4/Cognito authentication. Use this if you need integration with Bedrock-specific features.
 
 ### Prerequisites
 
