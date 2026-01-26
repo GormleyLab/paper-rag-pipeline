@@ -4,14 +4,20 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Paper RAG Pipeline - A locally-hosted RAG system for academic research paper management. Combines Docling (PDF processing), LanceDB (vector storage), OpenAI embeddings, and MCP (Model Context Protocol) to provide intelligent paper search and citation management through Claude Desktop.
+Paper RAG Pipeline - A RAG system for academic research paper management. Combines Docling (PDF processing), PostgreSQL + pgvector (vector storage), OpenAI embeddings, AWS S3 (PDF storage), and MCP (Model Context Protocol) to provide intelligent paper search and citation management.
 
-**Key Constraint**: Privacy-first architecture - all PDFs and databases stored locally. Only embedding generation calls external API (OpenAI).
+**Architecture**: PostgreSQL + pgvector for vector storage, S3 for PDF storage, MCP over HTTP for tool access.
 
-**Output Structure**: For each processed PDF, the system generates:
-- Vector embeddings stored in LanceDB (`data/lancedb/`)
-- Copy of PDF in `data/pdfs/` (renamed using citation key, e.g., `Smith2024.pdf`)
-- Individual BibTeX file in `data/bibs/` (named using citation key, e.g., `Smith2024.bib`)
+**Deployment Options**:
+- AWS App Runner (Recommended) - Static API key authentication, simple deployment
+- AWS AgentCore - SigV4/Cognito authentication for Bedrock integration
+
+**Production URL**: `https://m76rjhx9i3.us-east-1.awsapprunner.com` (API key required, stored in `PAPERRAG_API_KEY` env var)
+
+**Output Structure**: For each processed PDF, the system:
+- Stores vector embeddings in PostgreSQL with pgvector
+- Uploads PDF to S3 (key format: `pdfs/{bibtex_key}.pdf`)
+- Generates BibTeX entry stored in the database
 
 ## Development Setup
 
@@ -21,23 +27,35 @@ pip install -r requirements.txt
 
 # Configure environment
 cp .env.example .env
-# Edit .env: Add OPENAI_API_KEY and CROSSREF_EMAIL
+# Edit .env with required variables (see Environment Variables section)
 
-# Configure PDF library path
-# Edit config/config.yaml: Set pdf_library_path to your PDF directory
+# Run database migrations
+alembic upgrade head
 
-# Initialize database (processes all PDFs)
-python scripts/initial_setup.py
+# Initialize database with PDFs (optional)
+python scripts/initial_setup.py /path/to/pdf/folder
+
+# Run the MCP HTTP server
+python -m src.mcp_http_server
 ```
 
-## Testing the MCP Server
+## Environment Variables
 
 ```bash
-# Run MCP server directly (for debugging)
-python src/mcp_server.py
+# Required
+DATABASE_URL=postgresql+asyncpg://user:pass@host:5432/dbname
+OPENAI_API_KEY=sk-...
+S3_BUCKET=paper-rag-pdfs
+AWS_REGION=us-east-1
 
-# The server communicates via stdio (MCP protocol)
-# In production, it's launched by Claude Desktop
+# For App Runner deployment
+PAPERRAG_API_KEY=...           # Enables Bearer token authentication
+PORT=8080                      # Server port (default: 8080)
+
+# Optional
+CROSSREF_EMAIL=your@email.com  # Recommended for CrossRef API
+AWS_ACCESS_KEY_ID=...          # If not using IAM role
+AWS_SECRET_ACCESS_KEY=...      # If not using IAM role
 ```
 
 ## Architecture Overview
@@ -47,89 +65,129 @@ python src/mcp_server.py
 1. **PDF Ingestion** → `DocumentProcessor` (Docling) → Markdown + Chunks
 2. **Metadata Extraction** → `MetadataExtractor` → pdf2bib/DOI → CrossRef API → BibTeX
 3. **Embedding Generation** → `EmbeddingGenerator` (OpenAI) → 3072-dim vectors (batched)
-4. **Storage** → `VectorStore` (LanceDB) → Persistent local DB
+4. **Storage** → `PGVectorStore` (PostgreSQL + pgvector) + `S3Service` (PDF storage)
 5. **Query** → User question → Embedding → Vector similarity search → Results
 
 ### Component Responsibilities
 
-**`src/mcp_server.py`** - MCP server entry point
-- Lazy-loads all components on first tool call
-- Implements 6 async tool handlers for Claude Desktop
-- Configuration loaded from `config/config.yaml` + environment variables
-- All components are module-level singletons to avoid re-initialization
+**`src/mcp_http_server.py`** - MCP HTTP server (main entry point)
+- FastMCP with streamable HTTP transport (port 8080, configurable via PORT)
+- Implements 10 async tool handlers for MCP clients
+- Lazy initialization of all components
+- Health check endpoints at `/health` and `/ping`
+- API key authentication middleware (when PAPERRAG_API_KEY is set)
+
+**`src/core/settings.py`** - Configuration management
+- Pydantic Settings for environment variable loading
+- Type-safe configuration with validation
+- Settings cached via `get_settings()`
+
+**`src/core/database.py`** - Database connection management
+- Async SQLAlchemy engine with asyncpg
+- Session management via async context manager
+- Database initialization (schema + pgvector extension)
+
+**`src/models/paper.py`** - SQLAlchemy models
+- `Paper` - Paper metadata (bibtex_key, title, authors, year, s3_key, etc.)
+- `Chunk` - Text chunks with pgvector embedding (3072-dim)
+- Cascade delete: deleting a paper removes all its chunks
+
+**`src/pg_vector_store.py`** - PostgreSQL vector operations
+- Normalized schema (papers + chunks tables)
+- Cosine similarity search with pgvector
+- HNSW index for fast vector search
+- All operations are async
+
+**`src/services/s3_service.py`** - AWS S3 operations
+- PDF upload/download
+- Pre-signed URL generation
+- Organized as `pdfs/{bibtex_key}.pdf`
 
 **`src/document_processor.py`** - PDF processing
 - Uses Docling's `DocumentConverter` for PDF parsing
-- Docling's `HybridChunker` for semantic chunking (respects token limits)
-- Creates `DocumentChunk` dataclass instances with metadata (section, page, element type)
-- Element types: paragraph, table, figure, equation
+- `HybridChunker` for semantic chunking (respects token limits)
+- Creates `DocumentChunk` dataclass instances with metadata
 
 **`src/metadata_extractor.py`** - Citation metadata
-- **Strategy pattern** for metadata extraction (tries in order):
-  1. **pdf2bib** → Extracts DOI/arXiv/PMID directly from PDF → Fetches metadata (NEW - most reliable)
-  2. DOI → CrossRef API (BibTeX endpoint) - from text extraction
-  3. arXiv ID → arXiv API (XML parsing)
-  4. PubMed ID → PubMed API (placeholder - not fully implemented)
-  5. PDF metadata (PyMuPDF)
-  6. Document text parsing (fallback)
-- Returns `PaperMetadata` dataclass with `ExtractionMethod` enum (includes PDF2BIB)
-- Handles BibTeX key collision with letter suffixes (Smith2024a, Smith2024b)
-- **pdf2bib integration**: Uses the pdf2doi library to extract identifiers directly from PDF binary content, which is more reliable than text-based regex extraction
+- Strategy pattern for metadata extraction (tries in order):
+  1. **pdf2bib** → Extracts DOI/arXiv/PMID directly from PDF
+  2. DOI → CrossRef API
+  3. arXiv ID → arXiv API
+  4. PDF metadata (PyMuPDF)
+  5. Document text parsing (fallback)
+- Handles BibTeX key collision with letter suffixes
 
 **`src/embeddings.py`** - OpenAI integration
-- Batch processing (default 100 texts/batch) with retry logic
-- Exponential backoff on API errors (max 3 retries)
+- Batch processing with retry logic
 - Cost estimation: $0.00013 per 1K tokens for text-embedding-3-large
 - Returns `EmbeddingResult` with token count and cost tracking
 
-**`src/vector_store.py`** - LanceDB operations
-- **Schema**: 23 fields including paper metadata, chunk metadata, vector (3072-dim)
-- **Duplicate detection**: SHA256 hash of PDF content (first 16 chars = paper_id)
-- **Search filtering**: section name, publication year, tags
-- LanceDB doesn't support in-place updates easily - updates require read/modify/re-add
-- All chunks for a paper share same paper-level metadata (denormalized for query performance)
-
 **`src/bibliography.py`** - BibTeX management
 - Uses `pybtex` library for parsing/generation
-- Supports citation styles: inline `[Smith2024]`, APA, MLA
-- Can extract citation keys from LaTeX documents (regex patterns for `\cite{}`, `\citep{}`, `\citet{}`)
+- Supports citation styles: inline, APA, MLA
 
-**`src/utils.py`** - Helper utilities
-- DOI/arXiv/PMID regex extraction from text (fallback methods - pdf2bib is primary)
-- BibTeX key generation with collision handling
-- File hashing (SHA256) for duplicate detection
-- Logger setup with file + console output
-- Text cleaning, filename sanitization, timestamp generation
-- `copy_pdf_to_database()` - Copies PDF to `data/pdfs/` directory with citation key as filename
-- `save_bibtex_file()` - Saves individual .bib files to `data/bibs/` directory
+### Database Schema
 
-### Configuration Hierarchy
+```sql
+-- Schema: paper_rag
 
-1. `config/config.yaml` - Base configuration
-2. Environment variables (`.env`) - Override YAML (takes precedence)
-3. `CONFIG_PATH` env var - Can override config file location
+CREATE TABLE paper_rag.papers (
+    id UUID PRIMARY KEY,
+    pdf_hash VARCHAR(64) UNIQUE NOT NULL,
+    bibtex_key VARCHAR(100) UNIQUE NOT NULL,
+    bibtex_entry TEXT NOT NULL,
+    title TEXT NOT NULL,
+    authors TEXT NOT NULL,  -- Comma-separated
+    year INTEGER NOT NULL,
+    journal VARCHAR(500),
+    doi VARCHAR(200),
+    url VARCHAR(500),
+    s3_key VARCHAR(500) NOT NULL,
+    extraction_method VARCHAR(50) NOT NULL,
+    tags TEXT,              -- Comma-separated
+    notes TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
 
-**Critical paths in config**:
-- `pdf_library_path` - Where source PDFs are stored
-- `lancedb_path` - Vector database location (default: `./data/lancedb`)
-- `pdfs_path` - Database copies of PDFs, renamed by citation key (default: `./data/pdfs`)
-- `bibs_output_path` - Individual BibTeX files location (default: `./data/bibs`)
-- `openai_api_key` - Required for embeddings
-- `crossref_email` - Polite CrossRef API usage (optional but recommended)
+CREATE TABLE paper_rag.chunks (
+    id UUID PRIMARY KEY,
+    paper_id UUID REFERENCES paper_rag.papers(id) ON DELETE CASCADE,
+    chunk_index INTEGER NOT NULL,
+    text TEXT NOT NULL,
+    embedding vector(3072) NOT NULL,
+    section_title VARCHAR(500) NOT NULL,
+    section_hierarchy TEXT NOT NULL,  -- JSON string
+    page_number INTEGER,
+    element_type VARCHAR(50) NOT NULL
+);
 
-### MCP Tools (6 implemented)
+-- Indexes
+CREATE INDEX idx_papers_bibtex_key ON paper_rag.papers(bibtex_key);
+CREATE INDEX idx_papers_year ON paper_rag.papers(year);
+CREATE INDEX idx_chunks_paper_id ON paper_rag.chunks(paper_id);
+CREATE INDEX idx_chunks_embedding ON paper_rag.chunks USING hnsw (embedding vector_cosine_ops);
+```
 
-Each tool is an async function in `mcp_server.py`:
-1. `search_papers` - Query vector DB, returns formatted results with URLs
-2. `add_paper_from_file` - Full pipeline: process → extract → embed → store → save .bib file
-3. `generate_bibliography` - Retrieve papers by keys, write .bib file
+### MCP Tools (10 implemented)
+
+Each tool is an async function in `mcp_http_server.py`:
+
+**Core Tools:**
+1. `search_papers` - Semantic search with optional filters (section, year)
+2. `add_paper_from_file` - Add paper from local file path → S3
+3. `generate_bibliography` - Create .bib file from paper keys
 4. `get_paper_details` - Fetch paper metadata by BibTeX key
-5. `database_stats` - Aggregate statistics (paper count, year distribution)
-6. `list_recent_papers` - Sort by `date_added` field
+5. `database_stats` - Database statistics (paper count, year distribution)
+6. `list_recent_papers` - Sort by `created_at` field
+7. `delete_paper` - Remove paper and optionally delete from S3
 
-**Note**: Tool 2 (`add_paper_from_file`) automatically:
-- Copies PDF to `data/pdfs/` renamed with citation key (e.g., `Smith2024.pdf`)
-- Saves individual .bib file to `data/bibs/` named with citation key (e.g., `Smith2024.bib`)
+**Upload Tools (for Jiminy/remote clients):**
+8. `add_paper_from_upload` - Add paper from base64-encoded PDF
+9. `add_papers_from_folder_upload` - Batch upload multiple PDFs
+
+**PDF Retrieval:**
+10. `get_paper_pdf` - Download PDF from S3 as base64
 
 ### Key Dataclasses
 
@@ -142,116 +200,117 @@ PaperMetadata(title, authors, year, bibtex_key, bibtex_entry, journal, volume, p
 
 # src/embeddings.py
 EmbeddingResult(embedding: list[float], token_count: int, model: str)
-
-# src/vector_store.py
-ChunkRecord(id, paper_id, text, vector, bibtex_key, bibtex_entry, title, authors, year, journal, doi, url, pdf_path, pdf_hash, date_added, chunk_index, section_title, section_hierarchy, page_number, element_type, tags, notes, extraction_method)
 ```
 
 ## Common Development Tasks
 
 ### Adding a New MCP Tool
 
-1. Add tool definition to `handle_list_tools()` in `src/mcp_server.py`
-2. Create async handler function: `async def tool_name_tool(arguments: dict) -> list[types.TextContent]`
-3. Add case to `handle_call_tool()` dispatcher
-4. Tool should call `initialize_components()` to ensure all modules loaded
+1. Add `@mcp.tool()` decorated async function in `src/mcp_http_server.py`
+2. Call `await initialize_components()` at start
+3. Use `_vector_store`, `_s3_service`, etc. for operations
+4. Return string result
 
 ### Modifying the Database Schema
 
-⚠️ **Breaking change** - requires database rebuild:
-1. Update `_create_schema()` in `src/vector_store.py` (PyArrow schema)
-2. Update `ChunkRecord` dataclass
-3. Update `add_paper()` method to populate new fields
-4. Users must delete `data/lancedb/` and re-run `scripts/initial_setup.py`
+1. Update SQLAlchemy models in `src/models/paper.py`
+2. Create new Alembic migration: `alembic revision --autogenerate -m "description"`
+3. Review and adjust generated migration
+4. Apply: `alembic upgrade head`
 
 ### Adding New Metadata Sources
 
-1. Add new method to `MetadataExtractor` class (e.g., `_get_metadata_from_semanticscholar()`)
+1. Add new method to `MetadataExtractor` class
 2. Add new `ExtractionMethod` enum value
 3. Call new method in `extract_metadata()` strategy chain
 4. Return `PaperMetadata` with appropriate `extraction_method`
 
-### Cost Optimization
-
-- Reduce `batch_size` in config if hitting OpenAI rate limits
-- Adjust `max_chunk_tokens` to reduce chunk count (larger chunks = fewer embeddings)
-- Cache embeddings for queries (not currently implemented)
-
 ## Logging
 
-Logs written to `data/logs/`:
-- `mcp_server.log` - MCP server operations
-- `initial_setup.log` - Batch PDF processing (includes BibTeX file save status)
-- Each module uses `setup_logger(__name__)` from `src/utils.py`
+Logs written to stdout (for container compatibility):
+- Format: `%(asctime)s - %(name)s - %(levelname)s - %(message)s`
+- Log level configured via `LOG_LEVEL` env var or settings
 
-Log levels configured in `config.yaml` (`log_level: INFO`)
-
-## Output Files
-
-**PDF Copies** (`data/pdfs/`):
-- Database copies of processed PDFs
-- Filename uses citation key (e.g., `Smith2024.pdf`)
-- Ensures database has local copy even if original PDF is moved/deleted
-- Path stored in LanceDB for retrieval
-
-**Individual BibTeX Files** (`data/bibs/`):
-- Automatically generated for each processed PDF
-- Filename uses citation key (e.g., `Smith2024.bib`)
-- Contains single BibTeX entry with metadata extracted via pdf2bib or fallback methods
-- Useful for quick citation access without querying the database
+All logs are written to stdout for cloud/container compatibility.
 
 ## Error Handling Patterns
 
-**Graceful degradation in metadata extraction**: Tries pdf2bib first (most reliable), then text-based DOI → CrossRef, then arXiv, then PDF metadata, then parsing. If pdf2bib is not installed, automatically falls back to text-based methods. Always returns some `PaperMetadata` (worst case: title from filename, Unknown authors).
+**Graceful degradation in metadata extraction**: Tries pdf2bib first, then text-based DOI → CrossRef, then arXiv, then PDF metadata, then parsing. Always returns some `PaperMetadata`.
 
-**Retry logic**: Embeddings and API calls use exponential backoff (1s, 2s, 4s delays).
+**Retry logic**: Embeddings and API calls use exponential backoff.
 
-**Duplicate detection**: Papers checked by PDF hash before processing. Skipped silently with log entry.
+**Duplicate detection**: Papers checked by PDF hash (SHA256) before processing. Skipped silently with log entry.
 
-**Corrupted PDFs**: Caught in `DocumentProcessor.process_pdf()`, logged, counted in failures.
+**Database transactions**: All vector store operations wrapped in async sessions with automatic rollback on error.
 
 ## Important Implementation Notes
 
-### LanceDB Quirks
-- No easy in-place updates - store mutable fields (tags, notes) carefully
-- `delete()` uses SQL-like WHERE syntax: `table.delete("bibtex_key = 'Smith2024'")`
-- Search requires `.to_list()` to execute query (lazy evaluation)
+### PostgreSQL + pgvector
+- HNSW index for fast approximate nearest neighbor search
+- Cosine similarity via `vector_cosine_ops`
+- Async operations throughout
+- Schema isolation in `paper_rag` schema
+
+### S3 Storage
+- PDFs stored as `pdfs/{bibtex_key}.pdf`
+- Pre-signed URLs available for direct access
+- Automatic deletion when paper is removed (configurable)
 
 ### Docling Chunking
 - Chunker uses tokenizer name (string), not actual tokenizer object
 - `HybridChunker` balances semantic boundaries with token limits
-- Chunk metadata depends on Docling's document structure - may be incomplete for poorly formatted PDFs
+- Chunk metadata depends on Docling's document structure
 
 ### BibTeX Key Collisions
 - System auto-appends letters: `Smith2024` → `Smith2024a` → `Smith2024b`
 - Pass `existing_keys` set to `generate_bibtex_key()` to avoid collisions
-- Keys stored in both metadata and chunk records (denormalized)
 
 ### OpenAI Embedding Costs
 - text-embedding-3-large: $0.00013 per 1K tokens
 - Typical paper (20 pages): ~10-15 chunks, ~$0.015 total
 - Cost tracked in `EmbeddingResult.token_count` and logged
 
-### pdf2bib Integration
-- **Primary extraction method** (Strategy 1) - extracts identifiers directly from PDF binary
-- More reliable than text-based regex extraction - works even with scanned PDFs or complex layouts
-- Supports DOI, arXiv, and PMID extraction in a single call
-- Automatically queries appropriate APIs (CrossRef, arXiv) based on identifier type
-- **Graceful fallback**: If not installed, system automatically uses text-based extraction methods
-- Configure verbosity: `pdf2bib.config.set('verbose', True)` in `metadata_extractor.py` for debugging
-
 ## Development Workflow
 
 1. Make code changes in `src/`
-2. Test MCP tools manually or via Claude Desktop
-3. For schema changes: delete `data/lancedb/` and reinitialize
-4. Check logs in `data/logs/` for debugging
+2. Run migrations if schema changed: `alembic upgrade head`
+3. Test MCP tools via HTTP client or MCP inspector
+4. Check logs for debugging
 5. API keys in `.env` (never commit)
+
+## Project Structure
+
+```
+paper-rag-pipeline/
+├── src/
+│   ├── core/
+│   │   ├── database.py       # Async SQLAlchemy setup
+│   │   └── settings.py       # Pydantic settings
+│   ├── models/
+│   │   ├── base.py          # SQLAlchemy base
+│   │   └── paper.py         # Paper and Chunk models
+│   ├── services/
+│   │   └── s3_service.py    # S3 operations
+│   ├── mcp_http_server.py   # Main MCP server
+│   ├── pg_vector_store.py   # PostgreSQL vector operations
+│   ├── document_processor.py # PDF processing
+│   ├── metadata_extractor.py # Metadata extraction
+│   ├── embeddings.py        # OpenAI embeddings
+│   ├── bibliography.py      # BibTeX management
+│   └── utils.py             # Utilities
+├── alembic/
+│   ├── env.py
+│   └── versions/            # Migration files
+├── config/
+│   └── config.yaml          # Configuration
+├── scripts/
+│   └── initial_setup.py     # Batch PDF import
+├── requirements.txt
+└── alembic.ini
+```
 
 ## Future Enhancements (Planned)
 
-**Phase 2 (v1.5)**: `add_paper_from_url`, `verify_citation`, `update_bibtex`, `import_bibtex_file` tools
+**Phase 2**: `add_paper_from_url`, `verify_citation`, `update_bibtex`, `import_bibtex_file` tools
 
-**Phase 3 (v2.0)**: Citation graph - extract references, build network, analyze co-citations
-
-See `PRD.md` Section 6 for full roadmap.
+**Phase 3**: Citation graph - extract references, build network, analyze co-citations

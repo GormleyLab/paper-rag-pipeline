@@ -1,39 +1,40 @@
 """
 MCP HTTP Server for Paper RAG Pipeline.
-Provides MCP tools over HTTP for remote access (RunPod deployment).
+AWS AgentCore compatible MCP server with PostgreSQL + pgvector backend.
 Uses FastMCP with Streamable HTTP transport.
 """
 
-import os
-import sys
+import base64
 import json
 import logging
-import base64
+import os
+import secrets
+import sys
 import tempfile
 from pathlib import Path
-from typing import Optional, Any
-import yaml
+from typing import Optional
 
 from mcp.server.fastmcp import FastMCP
-from starlette.responses import JSONResponse
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 
 # Import existing components
 from src.document_processor import DocumentProcessor
 from src.metadata_extractor import MetadataExtractor
 from src.embeddings import EmbeddingGenerator
-from src.vector_store import VectorStore
+from src.pg_vector_store import PGVectorStore
 from src.bibliography import BibliographyManager, BibliographyEntry
+from src.services.s3_service import S3Service
+from src.core.settings import get_settings
+from src.core.database import init_db
 from src.utils import (
-    setup_logger,
     compute_file_hash,
     compute_hash_from_bytes,
-    save_bibtex_file,
-    copy_pdf_to_database,
 )
 
 
-# Set up logging - use stdout for container compatibility
+# Set up logging
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -42,140 +43,89 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Global instances (initialized on first use)
-_config: Optional[dict] = None
+_initialized: bool = False
 _doc_processor: Optional[DocumentProcessor] = None
 _metadata_extractor: Optional[MetadataExtractor] = None
 _embedding_generator: Optional[EmbeddingGenerator] = None
-_vector_store: Optional[VectorStore] = None
+_vector_store: Optional[PGVectorStore] = None
 _bibliography_manager: Optional[BibliographyManager] = None
+_s3_service: Optional[S3Service] = None
 
 
-def load_config() -> dict:
-    """Load configuration from config.yaml and environment variables."""
-    global _config
-
-    if _config is not None:
-        return _config
-
-    # Determine project root
-    # In container: /app
-    # Local: parent of src directory
-    if os.path.exists("/app/config"):
-        project_root = Path("/app")
-    else:
-        project_root = Path(__file__).parent.parent.resolve()
-
-    # Get config path from environment or use default
-    # RunPod uses config-runpod.yaml by default
-    default_config = (
-        "config/config-runpod.yaml"
-        if os.path.exists("/runpod-volume")
-        else "config/config.yaml"
-    )
-    config_path = os.getenv("CONFIG_PATH", default_config)
-    config_file = Path(config_path)
-
-    # If config path is relative, resolve it from project root
-    if not config_file.is_absolute():
-        config_file = project_root / config_file
-
-    if not config_file.exists():
-        logger.error(f"Config file not found: {config_file}")
-        raise FileNotFoundError(f"Config file not found: {config_file}")
-
-    with open(config_file, "r") as f:
-        _config = yaml.safe_load(f)
-
-    # Resolve relative paths in config to project root (only if not absolute)
-    for path_key in [
-        "lancedb_path",
-        "pdf_library_path",
-        "default_bib_output",
-        "pdfs_path",
-        "bibs_output_path",
-    ]:
-        if path_key in _config and _config[path_key]:
-            path_value = Path(_config[path_key])
-            if not path_value.is_absolute():
-                _config[path_key] = str(project_root / path_value)
-
-    # Override with environment variables
-    _config["openai_api_key"] = os.getenv(
-        "OPENAI_API_KEY", _config.get("openai_api_key", "")
-    )
-    _config["crossref_email"] = os.getenv(
-        "CROSSREF_EMAIL", _config.get("crossref_email", "")
-    )
-
-    logger.info(f"Configuration loaded successfully from {config_file}")
-    logger.info(f"Project root: {project_root}")
-    logger.info(f"LanceDB path: {_config.get('lancedb_path')}")
-    return _config
-
-
-def initialize_components():
-    """Initialize all pipeline components."""
+async def initialize_components():
+    """Initialize all pipeline components asynchronously."""
     global \
+        _initialized, \
         _doc_processor, \
         _metadata_extractor, \
         _embedding_generator, \
         _vector_store, \
-        _bibliography_manager
+        _bibliography_manager, \
+        _s3_service
 
-    cfg = load_config()
+    if _initialized:
+        return
+
+    settings = get_settings()
+
+    # Initialize database
+    await init_db()
+    logger.info("Database initialized")
 
     # Initialize document processor
     if _doc_processor is None:
         _doc_processor = DocumentProcessor(
-            max_chunk_tokens=cfg.get("max_chunk_tokens", 1000),
-            chunk_overlap=cfg.get("chunk_overlap", 150),
-            embedding_model=cfg.get("embedding_model", "text-embedding-3-large"),
+            max_chunk_tokens=settings.max_chunk_tokens,
+            chunk_overlap=settings.chunk_overlap,
+            embedding_model=settings.embedding_model,
         )
         logger.info("Document processor initialized")
 
     # Initialize metadata extractor
     if _metadata_extractor is None:
         _metadata_extractor = MetadataExtractor(
-            crossref_email=cfg.get("crossref_email")
+            crossref_email=settings.crossref_email
         )
         logger.info("Metadata extractor initialized")
 
     # Initialize embedding generator
     if _embedding_generator is None:
-        api_key = cfg.get("openai_api_key")
-        if not api_key:
-            raise ValueError("OpenAI API key not found in config or environment")
+        if not settings.openai_api_key:
+            raise ValueError("OpenAI API key not found in environment")
 
         _embedding_generator = EmbeddingGenerator(
-            api_key=api_key,
-            model=cfg.get("embedding_model", "text-embedding-3-large"),
-            dimensions=cfg.get("vector_dimension", 3072),
-            batch_size=cfg.get("batch_size", 100),
+            api_key=settings.openai_api_key,
+            model=settings.embedding_model,
+            dimensions=settings.vector_dimension,
+            batch_size=settings.batch_size,
         )
         logger.info("Embedding generator initialized")
 
-    # Initialize vector store
+    # Initialize PostgreSQL vector store
     if _vector_store is None:
-        db_path = Path(cfg.get("lancedb_path", "data/lancedb"))
-        # Ensure directory exists
-        db_path.parent.mkdir(parents=True, exist_ok=True)
-
-        _vector_store = VectorStore(
-            db_path=db_path, vector_dimension=cfg.get("vector_dimension", 3072)
+        _vector_store = PGVectorStore(
+            vector_dimension=settings.vector_dimension
         )
-        _vector_store.initialize_table()
-        logger.info(f"Vector store initialized at {db_path}")
+        logger.info("PostgreSQL vector store initialized")
 
     # Initialize bibliography manager
     if _bibliography_manager is None:
         _bibliography_manager = BibliographyManager()
         logger.info("Bibliography manager initialized")
 
+    # Initialize S3 service
+    if _s3_service is None:
+        _s3_service = S3Service()
+        logger.info("S3 service initialized")
+
+    _initialized = True
     logger.info("All components initialized successfully")
 
 
-# Create FastMCP server with stateless HTTP (required for serverless)
-mcp = FastMCP("paper-rag", stateless_http=True)
+# Create FastMCP server with stateless HTTP
+# host="0.0.0.0" is required for container deployments (AgentCore, Docker, etc.)
+# Default port (8000) is used - matches Dockerfile EXPOSE and AWS AgentCore default
+mcp = FastMCP("paper-rag", stateless_http=True, host="0.0.0.0")
 
 
 @mcp.tool()
@@ -199,7 +149,7 @@ async def search_papers(
     Returns:
         Search results formatted as text or JSON
     """
-    initialize_components()
+    await initialize_components()
 
     logger.info(f"Searching for: {query}")
 
@@ -207,7 +157,7 @@ async def search_papers(
     query_embedding = _embedding_generator.generate_embedding(query)
 
     # Search vector store
-    results = _vector_store.search(
+    results = await _vector_store.search(
         query_vector=query_embedding.embedding,
         n_results=n_results,
         filter_section=filter_section,
@@ -294,7 +244,7 @@ async def add_paper_from_file(
     Returns:
         Status message with paper details
     """
-    initialize_components()
+    await initialize_components()
 
     if custom_tags is None:
         custom_tags = []
@@ -307,7 +257,7 @@ async def add_paper_from_file(
 
     # Check for duplicates
     pdf_hash = compute_file_hash(pdf_path)
-    if _vector_store.check_duplicate(pdf_hash):
+    if await _vector_store.check_duplicate(pdf_hash):
         return f"Paper already exists in database (duplicate PDF detected): {pdf_path.name}"
 
     # Process PDF
@@ -317,7 +267,7 @@ async def add_paper_from_file(
     first_pages_text = _doc_processor.extract_text_from_first_pages(pdf_path)
 
     # Extract metadata
-    existing_keys = _vector_store.get_all_bibtex_keys()
+    existing_keys = await _vector_store.get_all_bibtex_keys()
     metadata = _metadata_extractor.extract_metadata(
         pdf_path, first_pages_text=first_pages_text, existing_keys=existing_keys
     )
@@ -327,47 +277,26 @@ async def add_paper_from_file(
     embedding_results = _embedding_generator.generate_embeddings_batch(chunk_texts)
     embeddings = [result.embedding for result in embedding_results]
 
-    # Copy PDF to database storage
-    cfg = load_config()
-    pdfs_dir = Path(cfg.get("pdfs_path", "data/pdfs"))
-    pdfs_dir.mkdir(parents=True, exist_ok=True)
-
+    # Upload PDF to S3
     try:
-        copied_pdf_path = copy_pdf_to_database(
-            source_pdf=pdf_path, bibtex_key=metadata.bibtex_key, output_dir=pdfs_dir
+        s3_key = await _s3_service.upload_pdf_from_file(
+            file_path=pdf_path,
+            bibtex_key=metadata.bibtex_key,
         )
-        logger.info(f"Copied PDF to database: {copied_pdf_path}")
-        pdf_copied = True
+        logger.info(f"Uploaded PDF to S3: {s3_key}")
     except Exception as e:
-        logger.warning(f"Failed to copy PDF: {e}")
-        copied_pdf_path = pdf_path
-        pdf_copied = False
+        logger.error(f"Failed to upload PDF to S3: {e}")
+        return f"Error: Failed to upload PDF to S3: {str(e)}"
 
     # Add to vector store
-    num_chunks = _vector_store.add_paper(
+    num_chunks = await _vector_store.add_paper(
         metadata=metadata,
         chunks=chunks,
         embeddings=embeddings,
-        pdf_path=copied_pdf_path,
+        s3_key=s3_key,
         pdf_hash=pdf_hash,
         tags=custom_tags,
     )
-
-    # Save individual BibTeX file
-    bibs_dir = Path(cfg.get("bibs_output_path", "data/bibs"))
-    bibs_dir.mkdir(parents=True, exist_ok=True)
-
-    try:
-        bib_file_path = save_bibtex_file(
-            bibtex_entry=metadata.bibtex_entry,
-            bibtex_key=metadata.bibtex_key,
-            output_dir=bibs_dir,
-        )
-        logger.info(f"Saved BibTeX file: {bib_file_path}")
-        bib_saved = True
-    except Exception as e:
-        logger.warning(f"Failed to save BibTeX file: {e}")
-        bib_saved = False
 
     # Get embedding stats
     stats = _embedding_generator.get_embedding_stats(embedding_results)
@@ -386,8 +315,7 @@ Successfully added paper to database!
 **Indexed:** {num_chunks} chunks
 **Tokens Processed:** {stats["total_tokens"]}
 **Estimated Cost:** ${stats["estimated_cost_usd"]:.4f}
-{"**PDF File:** Copied to " + str(pdfs_dir / (metadata.bibtex_key + ".pdf")) if pdf_copied else "**PDF File:** Failed to copy (using original path)"}
-{"**BibTeX File:** Saved to " + str(bibs_dir / (metadata.bibtex_key + ".bib")) if bib_saved else "**BibTeX File:** Failed to save"}
+**PDF Storage:** S3 ({s3_key})
 
 The paper is now searchable in your database.
 """
@@ -402,9 +330,8 @@ async def add_paper_from_upload(
     """
     Add a PDF paper to the database from base64-encoded data.
 
-    This tool accepts PDF content directly uploaded from Claude Desktop,
-    enabling PDF uploads to the remote MCP server without requiring files
-    to exist on the server filesystem.
+    This tool accepts PDF content directly uploaded, enabling PDF uploads
+    to the MCP server without requiring files to exist on the server filesystem.
 
     Args:
         pdf_data: Base64-encoded PDF file content
@@ -414,7 +341,7 @@ async def add_paper_from_upload(
     Returns:
         Status message with paper details
     """
-    initialize_components()
+    await initialize_components()
 
     if custom_tags is None:
         custom_tags = []
@@ -432,34 +359,33 @@ async def add_paper_from_upload(
     if not pdf_bytes.startswith(b"%PDF"):
         return "Error: Invalid PDF file - data does not start with PDF magic bytes"
 
-    # Step 3: Compute hash for duplicate detection (before writing to disk)
+    # Step 3: Compute hash for duplicate detection
     pdf_hash = compute_hash_from_bytes(pdf_bytes)
 
-    if _vector_store.check_duplicate(pdf_hash):
+    if await _vector_store.check_duplicate(pdf_hash):
         return f"Paper already exists in database (duplicate PDF detected): {filename}"
 
     # Step 4: Write to temporary file for processing
     temp_path = None
     try:
-        # Create temp file with .pdf suffix (important for some processors)
         with tempfile.NamedTemporaryFile(
             mode="wb",
             suffix=".pdf",
-            delete=False,  # We manage deletion manually for proper cleanup
+            delete=False,
         ) as temp_file:
             temp_file.write(pdf_bytes)
             temp_path = Path(temp_file.name)
 
         logger.info(f"Created temporary file: {temp_path}")
 
-        # Step 5: Process PDF using existing pipeline
+        # Step 5: Process PDF
         doc, chunks = _doc_processor.process_pdf(temp_path)
 
         # Step 6: Extract text from first pages for metadata
         first_pages_text = _doc_processor.extract_text_from_first_pages(temp_path)
 
         # Step 7: Extract metadata
-        existing_keys = _vector_store.get_all_bibtex_keys()
+        existing_keys = await _vector_store.get_all_bibtex_keys()
         metadata = _metadata_extractor.extract_metadata(
             temp_path, first_pages_text=first_pages_text, existing_keys=existing_keys
         )
@@ -469,51 +395,28 @@ async def add_paper_from_upload(
         embedding_results = _embedding_generator.generate_embeddings_batch(chunk_texts)
         embeddings = [result.embedding for result in embedding_results]
 
-        # Step 9: Copy PDF to permanent storage
-        cfg = load_config()
-        pdfs_dir = Path(cfg.get("pdfs_path", "data/pdfs"))
-        pdfs_dir.mkdir(parents=True, exist_ok=True)
-
+        # Step 9: Upload PDF to S3
         try:
-            copied_pdf_path = copy_pdf_to_database(
-                source_pdf=temp_path,
+            s3_key = await _s3_service.upload_pdf_from_bytes(
+                pdf_bytes=pdf_bytes,
                 bibtex_key=metadata.bibtex_key,
-                output_dir=pdfs_dir,
             )
-            logger.info(f"Copied PDF to database: {copied_pdf_path}")
-            pdf_copied = True
+            logger.info(f"Uploaded PDF to S3: {s3_key}")
         except Exception as e:
-            logger.warning(f"Failed to copy PDF: {e}")
-            copied_pdf_path = temp_path
-            pdf_copied = False
+            logger.error(f"Failed to upload PDF to S3: {e}")
+            return f"Error: Failed to upload PDF to S3: {str(e)}"
 
         # Step 10: Add to vector store
-        num_chunks = _vector_store.add_paper(
+        num_chunks = await _vector_store.add_paper(
             metadata=metadata,
             chunks=chunks,
             embeddings=embeddings,
-            pdf_path=copied_pdf_path,
+            s3_key=s3_key,
             pdf_hash=pdf_hash,
             tags=custom_tags,
         )
 
-        # Step 11: Save individual BibTeX file
-        bibs_dir = Path(cfg.get("bibs_output_path", "data/bibs"))
-        bibs_dir.mkdir(parents=True, exist_ok=True)
-
-        try:
-            bib_file_path = save_bibtex_file(
-                bibtex_entry=metadata.bibtex_entry,
-                bibtex_key=metadata.bibtex_key,
-                output_dir=bibs_dir,
-            )
-            logger.info(f"Saved BibTeX file: {bib_file_path}")
-            bib_saved = True
-        except Exception as e:
-            logger.warning(f"Failed to save BibTeX file: {e}")
-            bib_saved = False
-
-        # Step 12: Get embedding stats
+        # Step 11: Get embedding stats
         stats = _embedding_generator.get_embedding_stats(embedding_results)
 
         output = f"""
@@ -531,8 +434,7 @@ Successfully added paper to database!
 **Indexed:** {num_chunks} chunks
 **Tokens Processed:** {stats["total_tokens"]}
 **Estimated Cost:** ${stats["estimated_cost_usd"]:.4f}
-{"**PDF File:** Saved to " + str(pdfs_dir / (metadata.bibtex_key + ".pdf")) if pdf_copied else "**PDF File:** Failed to save"}
-{"**BibTeX File:** Saved to " + str(bibs_dir / (metadata.bibtex_key + ".bib")) if bib_saved else "**BibTeX File:** Failed to save"}
+**PDF Storage:** S3 ({s3_key})
 
 The paper is now searchable in your database.
 """
@@ -560,9 +462,8 @@ async def add_papers_from_folder_upload(
     """
     Add multiple PDF papers to the database from base64-encoded data.
 
-    Use this for batch uploading PDFs from a local folder. The client should
-    read all PDFs from the folder, encode them as base64, and send them in
-    a single request.
+    Use this for batch uploading PDFs. The client should read all PDFs,
+    encode them as base64, and send them in a single request.
 
     Args:
         pdf_files: List of dicts, each with 'filename' (str) and 'pdf_data' (str, base64-encoded)
@@ -571,7 +472,7 @@ async def add_papers_from_folder_upload(
     Returns:
         Summary with processed/skipped/failed counts and details
     """
-    initialize_components()
+    await initialize_components()
 
     if custom_tags is None:
         custom_tags = []
@@ -584,19 +485,12 @@ async def add_papers_from_folder_upload(
     failed = 0
     total_cost = 0.0
 
-    successful_papers = []  # List of (bibtex_key, title)
-    skipped_papers = []  # List of (filename, reason)
-    failed_papers = []  # List of (filename, error_message)
+    successful_papers = []
+    skipped_papers = []
+    failed_papers = []
 
     # Get existing BibTeX keys once for collision detection across batch
-    existing_keys = _vector_store.get_all_bibtex_keys()
-
-    # Get config for output paths
-    cfg = load_config()
-    pdfs_dir = Path(cfg.get("pdfs_path", "data/pdfs"))
-    bibs_dir = Path(cfg.get("bibs_output_path", "data/bibs"))
-    pdfs_dir.mkdir(parents=True, exist_ok=True)
-    bibs_dir.mkdir(parents=True, exist_ok=True)
+    existing_keys = await _vector_store.get_all_bibtex_keys()
 
     for pdf_item in pdf_files:
         filename = pdf_item.get("filename", "unknown.pdf")
@@ -604,7 +498,7 @@ async def add_papers_from_folder_upload(
         temp_path = None
 
         try:
-            # Step 1: Decode base64 data
+            # Decode base64 data
             try:
                 pdf_bytes = base64.b64decode(pdf_data)
             except Exception as e:
@@ -613,23 +507,23 @@ async def add_papers_from_folder_upload(
                 failed += 1
                 continue
 
-            # Step 2: Validate PDF magic bytes
+            # Validate PDF magic bytes
             if not pdf_bytes.startswith(b"%PDF"):
                 logger.warning(f"Invalid PDF magic bytes for {filename}")
                 failed_papers.append((filename, "Invalid PDF file - not a valid PDF"))
                 failed += 1
                 continue
 
-            # Step 3: Compute hash for duplicate detection
+            # Compute hash for duplicate detection
             pdf_hash = compute_hash_from_bytes(pdf_bytes)
 
-            if _vector_store.check_duplicate(pdf_hash):
+            if await _vector_store.check_duplicate(pdf_hash):
                 logger.info(f"Skipping duplicate: {filename}")
                 skipped_papers.append((filename, "already in database"))
                 skipped += 1
                 continue
 
-            # Step 4: Write to temporary file
+            # Write to temporary file
             with tempfile.NamedTemporaryFile(
                 mode="wb", suffix=".pdf", delete=False
             ) as temp_file:
@@ -638,13 +532,13 @@ async def add_papers_from_folder_upload(
 
             logger.info(f"Processing: {filename}")
 
-            # Step 5: Process PDF using existing pipeline
+            # Process PDF
             doc, chunks = _doc_processor.process_pdf(temp_path)
 
-            # Step 6: Extract text from first pages for metadata
+            # Extract text from first pages for metadata
             first_pages_text = _doc_processor.extract_text_from_first_pages(temp_path)
 
-            # Step 7: Extract metadata (use existing_keys set that we update)
+            # Extract metadata
             metadata = _metadata_extractor.extract_metadata(
                 temp_path,
                 first_pages_text=first_pages_text,
@@ -654,7 +548,7 @@ async def add_papers_from_folder_upload(
             # Add new key to existing_keys to prevent collisions within batch
             existing_keys.add(metadata.bibtex_key)
 
-            # Step 8: Generate embeddings
+            # Generate embeddings
             chunk_texts = [chunk.text for chunk in chunks]
             embedding_results = _embedding_generator.generate_embeddings_batch(
                 chunk_texts
@@ -665,36 +559,27 @@ async def add_papers_from_folder_upload(
             stats = _embedding_generator.get_embedding_stats(embedding_results)
             total_cost += stats["estimated_cost_usd"]
 
-            # Step 9: Copy PDF to permanent storage
+            # Upload PDF to S3
             try:
-                copied_pdf_path = copy_pdf_to_database(
-                    source_pdf=temp_path,
+                s3_key = await _s3_service.upload_pdf_from_bytes(
+                    pdf_bytes=pdf_bytes,
                     bibtex_key=metadata.bibtex_key,
-                    output_dir=pdfs_dir,
                 )
             except Exception as e:
-                logger.warning(f"Failed to copy PDF for {filename}: {e}")
-                copied_pdf_path = temp_path
+                logger.error(f"Failed to upload PDF to S3 for {filename}: {e}")
+                failed_papers.append((filename, f"S3 upload failed: {str(e)}"))
+                failed += 1
+                continue
 
-            # Step 10: Add to vector store
-            _vector_store.add_paper(
+            # Add to vector store
+            await _vector_store.add_paper(
                 metadata=metadata,
                 chunks=chunks,
                 embeddings=embeddings,
-                pdf_path=copied_pdf_path,
+                s3_key=s3_key,
                 pdf_hash=pdf_hash,
                 tags=custom_tags,
             )
-
-            # Step 11: Save individual BibTeX file
-            try:
-                save_bibtex_file(
-                    bibtex_entry=metadata.bibtex_entry,
-                    bibtex_key=metadata.bibtex_key,
-                    output_dir=bibs_dir,
-                )
-            except Exception as e:
-                logger.warning(f"Failed to save BibTeX file for {filename}: {e}")
 
             # Track success
             successful_papers.append((metadata.bibtex_key, metadata.title))
@@ -728,7 +613,6 @@ async def add_papers_from_folder_upload(
     if successful_papers:
         output_lines.append("**Successfully Added:**")
         for i, (key, title) in enumerate(successful_papers, 1):
-            # Truncate long titles
             display_title = title[:60] + "..." if len(title) > 60 else title
             output_lines.append(f'{i}. [{key}] "{display_title}"')
         output_lines.append("")
@@ -742,7 +626,6 @@ async def add_papers_from_folder_upload(
     if failed_papers:
         output_lines.append("**Failed:**")
         for filename, error in failed_papers:
-            # Truncate long error messages
             display_error = error[:80] + "..." if len(error) > 80 else error
             output_lines.append(f"- {filename}: {display_error}")
 
@@ -766,7 +649,7 @@ async def generate_bibliography(
     Returns:
         Status message with generation results
     """
-    initialize_components()
+    await initialize_components()
 
     logger.info(f"Generating bibliography with {len(bibtex_keys)} entries")
 
@@ -775,7 +658,7 @@ async def generate_bibliography(
     missing_keys = []
 
     for key in bibtex_keys:
-        paper = _vector_store.get_paper_by_key(key)
+        paper = await _vector_store.get_paper_by_key(key)
         if paper:
             entry = BibliographyEntry(
                 bibtex_key=paper["bibtex_key"],
@@ -820,18 +703,17 @@ async def get_paper_details(bibtex_key: str) -> str:
     Returns:
         Detailed paper information
     """
-    initialize_components()
+    await initialize_components()
 
     logger.info(f"Getting details for: {bibtex_key}")
 
-    paper = _vector_store.get_paper_by_key(bibtex_key)
+    paper = await _vector_store.get_paper_by_key(bibtex_key)
 
     if not paper:
         return f"Paper not found: {bibtex_key}"
 
     # Get chunk count
-    paper_id = paper["pdf_hash"][:16]
-    chunks = _vector_store.get_paper_chunks(paper_id)
+    chunks = await _vector_store.get_paper_chunks(paper["id"])
 
     output = f"""
 **Paper Details**
@@ -848,9 +730,9 @@ async def get_paper_details(bibtex_key: str) -> str:
 
 **Database Info:**
 - Chunks Indexed: {len(chunks)}
-- Date Added: {paper["date_added"]}
+- Date Added: {paper["date_added"][:10]}
 - Extraction Method: {paper["extraction_method"]}
-- PDF Path: {paper["pdf_path"]}
+- Storage: S3 ({paper["s3_key"]})
 
 **BibTeX Entry:**
 ```bibtex
@@ -872,34 +754,19 @@ async def get_paper_pdf(bibtex_key: str) -> str:
     Returns:
         Base64-encoded PDF file content as a string
     """
-    initialize_components()
+    await initialize_components()
 
     logger.info(f"Getting PDF for: {bibtex_key}")
 
     # First check if paper exists
-    paper = _vector_store.get_paper_by_key(bibtex_key)
+    paper = await _vector_store.get_paper_by_key(bibtex_key)
 
     if not paper:
         return f"Error: Paper not found: {bibtex_key}"
 
-    # Get PDF path from config
-    cfg = load_config()
-    pdfs_dir = Path(cfg.get("pdfs_path", "data/pdfs"))
-    pdf_path = pdfs_dir / f"{bibtex_key}.pdf"
-
-    # Check if PDF file exists
-    if not pdf_path.exists():
-        # Try using the stored pdf_path from the paper record as fallback
-        stored_path = paper.get("pdf_path")
-        if stored_path and Path(stored_path).exists():
-            pdf_path = Path(stored_path)
-        else:
-            return f"Error: PDF file not found for paper: {bibtex_key}"
-
     try:
-        # Read PDF file and encode to base64
-        with open(pdf_path, "rb") as f:
-            pdf_bytes = f.read()
+        # Download PDF from S3
+        pdf_bytes = await _s3_service.download_pdf(paper["s3_key"])
 
         # Encode to base64
         pdf_base64 = base64.b64encode(pdf_bytes).decode("utf-8")
@@ -910,8 +777,8 @@ async def get_paper_pdf(bibtex_key: str) -> str:
         return pdf_base64
 
     except Exception as e:
-        logger.error(f"Error reading PDF file for {bibtex_key}: {e}", exc_info=True)
-        return f"Error: Failed to read PDF file: {str(e)}"
+        logger.error(f"Error retrieving PDF for {bibtex_key}: {e}", exc_info=True)
+        return f"Error: Failed to retrieve PDF: {str(e)}"
 
 
 @mcp.tool()
@@ -922,11 +789,11 @@ async def database_stats() -> str:
     Returns:
         Database statistics including paper count, year distribution, etc.
     """
-    initialize_components()
+    await initialize_components()
 
     logger.info("Getting database statistics")
 
-    stats = _vector_store.get_statistics()
+    stats = await _vector_store.get_statistics()
 
     output = f"""
 **Database Statistics**
@@ -934,6 +801,7 @@ async def database_stats() -> str:
 **Papers:** {stats["total_papers"]}
 **Chunks:** {stats["total_chunks"]}
 **Average Publication Year:** {stats["average_year"]}
+**Backend:** {stats["database_type"]}
 
 **Papers by Year:**
 """
@@ -945,8 +813,6 @@ async def database_stats() -> str:
 
     if len(sorted_years) > 10:
         output += f"\n  ... and {len(sorted_years) - 10} more years"
-
-    output += f"\n\n**Database Path:** {stats['database_path']}"
 
     return output
 
@@ -962,11 +828,11 @@ async def list_recent_papers(n: int = 10) -> str:
     Returns:
         List of recently added papers
     """
-    initialize_components()
+    await initialize_components()
 
     logger.info(f"Listing {n} recent papers")
 
-    papers = _vector_store.list_recent_papers(n)
+    papers = await _vector_store.list_recent_papers(n)
 
     if not papers:
         return "No papers in database."
@@ -986,30 +852,30 @@ async def list_recent_papers(n: int = 10) -> str:
 
 
 @mcp.tool()
-async def delete_paper(bibtex_key: str, delete_files: bool = True) -> str:
+async def delete_paper(bibtex_key: str, delete_s3: bool = True) -> str:
     """
-    Delete a paper from the database and optionally remove associated files.
+    Delete a paper from the database and optionally remove from S3.
 
     Args:
         bibtex_key: The BibTeX key of the paper to delete
-        delete_files: Whether to delete associated PDF and .bib files (default: true)
+        delete_s3: Whether to delete the PDF from S3 (default: true)
 
     Returns:
         Status message with deletion results
     """
-    initialize_components()
+    await initialize_components()
 
-    logger.info(f"Deleting paper: {bibtex_key} (delete_files={delete_files})")
+    logger.info(f"Deleting paper: {bibtex_key} (delete_s3={delete_s3})")
 
     # First check if paper exists and get its details
-    paper = _vector_store.get_paper_by_key(bibtex_key)
+    paper = await _vector_store.get_paper_by_key(bibtex_key)
 
     if not paper:
         return f"Error: Paper not found in database: {bibtex_key}"
 
     # Delete from database
     try:
-        deleted_count = _vector_store.delete_paper(bibtex_key)
+        deleted_count = await _vector_store.delete_paper(bibtex_key)
         logger.info(f"Deleted {deleted_count} chunks for paper {bibtex_key}")
     except Exception as e:
         logger.error(f"Error deleting paper from database: {e}", exc_info=True)
@@ -1022,97 +888,113 @@ async def delete_paper(bibtex_key: str, delete_files: bool = True) -> str:
         f"- Deleted {deleted_count} chunks",
     ]
 
-    # Delete associated files if requested
-    if delete_files:
-        cfg = load_config()
-        files_deleted = []
-        files_not_found = []
-
-        # Delete PDF file
-        pdfs_dir = Path(cfg.get("pdfs_path", "data/pdfs"))
-        pdf_path = pdfs_dir / f"{bibtex_key}.pdf"
-
-        if pdf_path.exists():
-            try:
-                pdf_path.unlink()
-                files_deleted.append(f"PDF: {pdf_path}")
-                logger.info(f"Deleted PDF file: {pdf_path}")
-            except Exception as e:
-                logger.error(f"Error deleting PDF file: {e}", exc_info=True)
-                output_lines.append(f"- Warning: Failed to delete PDF file: {e}")
-        else:
-            files_not_found.append(f"PDF: {pdf_path}")
-
-        # Delete BibTeX file
-        bibs_dir = Path(cfg.get("bibs_output_path", "data/bibs"))
-        bib_path = bibs_dir / f"{bibtex_key}.bib"
-
-        if bib_path.exists():
-            try:
-                bib_path.unlink()
-                files_deleted.append(f".bib: {bib_path}")
-                logger.info(f"Deleted BibTeX file: {bib_path}")
-            except Exception as e:
-                logger.error(f"Error deleting BibTeX file: {e}", exc_info=True)
-                output_lines.append(f"- Warning: Failed to delete BibTeX file: {e}")
-        else:
-            files_not_found.append(f".bib: {bib_path}")
-
-        if files_deleted:
-            output_lines.append(f"\nDeleted files:")
-            for file_desc in files_deleted:
-                output_lines.append(f"  - {file_desc}")
-
-        if files_not_found:
-            output_lines.append(
-                f"\nFiles not found (already deleted or never created):"
-            )
-            for file_desc in files_not_found:
-                output_lines.append(f"  - {file_desc}")
+    # Delete from S3 if requested
+    if delete_s3:
+        try:
+            await _s3_service.delete_pdf(paper["s3_key"])
+            output_lines.append(f"\nDeleted PDF from S3: {paper['s3_key']}")
+            logger.info(f"Deleted PDF from S3: {paper['s3_key']}")
+        except Exception as e:
+            logger.error(f"Error deleting PDF from S3: {e}", exc_info=True)
+            output_lines.append(f"\nWarning: Failed to delete PDF from S3: {e}")
     else:
-        output_lines.append(
-            "\n- Associated files were not deleted (delete_files=False)"
-        )
+        output_lines.append("\n- PDF retained in S3 (delete_s3=False)")
 
     return "\n".join(output_lines)
 
 
+class APIKeyAuthMiddleware(BaseHTTPMiddleware):
+    """Validates Authorization: Bearer <api_key> header for API authentication."""
+
+    EXEMPT_PATHS = {"/health", "/ping", "/"}
+
+    def __init__(self, app, api_key: str):
+        super().__init__(app)
+        self.api_key = api_key
+
+    async def dispatch(self, request, call_next):
+        # Allow health checks without auth
+        if request.url.path in self.EXEMPT_PATHS:
+            return await call_next(request)
+
+        auth_header = request.headers.get("Authorization", "")
+        if not auth_header.startswith("Bearer "):
+            return Response(
+                content='{"error": "Missing Authorization: Bearer <key> header"}',
+                status_code=401,
+                media_type="application/json",
+            )
+
+        token = auth_header[7:]  # Remove "Bearer " prefix
+        if not secrets.compare_digest(token, self.api_key):
+            return Response(
+                content='{"error": "Invalid API key"}',
+                status_code=401,
+                media_type="application/json",
+            )
+
+        return await call_next(request)
+
+
 def create_app():
-    """Create and return the Starlette app with MCP server and auth middleware."""
-    from src.auth import BearerAuthMiddleware
+    """
+    Create and return the Starlette app with MCP server and health endpoints.
 
+    Use this for local testing with uvicorn:
+        uvicorn src.mcp_http_server:create_app --factory --host 0.0.0.0 --port 8000
+
+    Or with run_http_server():
+        python -c "from src.mcp_http_server import run_http_server; run_http_server()"
+
+    For App Runner deployment, set PAPERRAG_API_KEY to enable authentication.
+    """
     # Get the underlying Starlette app from FastMCP
-    app = mcp.streamable_http_app()
+    starlette_app = mcp.streamable_http_app()
 
-    # Add /ping endpoint for RunPod load-balanced health checks
-    async def ping(_request):
-        """Health check endpoint for RunPod load-balanced endpoints."""
-        return JSONResponse({"status": "ok"})
-
-    # Add /health endpoint for Docker health checks
+    # Add health check endpoints
     async def health(_request):
-        """Health check endpoint for Docker HEALTHCHECK directive."""
-        return JSONResponse({"status": "ok"})
+        """Health check endpoint."""
+        return JSONResponse({"status": "ok", "service": "paper-rag"})
 
-    app.routes.append(Route("/ping", ping, methods=["GET"]))
-    app.routes.append(Route("/health", health, methods=["GET"]))
+    starlette_app.routes.append(Route("/health", health, methods=["GET"]))
+    starlette_app.routes.append(Route("/ping", health, methods=["GET"]))
 
-    # Add authentication middleware
-    app.add_middleware(BearerAuthMiddleware)
+    # Add API key authentication if configured
+    api_key = os.environ.get("PAPERRAG_API_KEY")
+    if api_key:
+        logger.info("API key authentication enabled")
+        starlette_app = APIKeyAuthMiddleware(starlette_app, api_key)
+    else:
+        logger.warning("PAPERRAG_API_KEY not set - authentication disabled")
 
-    return app
+    return starlette_app
 
 
-def run_http_server(host: str = "0.0.0.0", port: int = 8080):
-    """Run the MCP HTTP server."""
+def run_http_server(host: str = "0.0.0.0", port: Optional[int] = None):
+    """
+    Run the MCP HTTP server with custom health endpoints.
+
+    For local testing:
+        python -c "from src.mcp_http_server import run_http_server; run_http_server()"
+
+    For App Runner deployment, set PORT and PAPERRAG_API_KEY environment variables.
+    """
     import uvicorn
 
-    logger.info(f"Starting MCP HTTP server on {host}:{port}")
+    if port is None:
+        port = int(os.environ.get("PORT", 8080))
 
+    logger.info(f"Starting MCP HTTP server on {host}:{port}")
     app = create_app()
     uvicorn.run(app, host=host, port=port)
 
 
 if __name__ == "__main__":
-    # For local testing
-    run_http_server()
+    # App Runner compatible entry point
+    # Uses create_app() which includes API key authentication middleware
+    # Reads PORT from environment variable (default: 8080)
+    import uvicorn
+
+    port = int(os.environ.get("PORT", 8080))
+    logger.info(f"Starting MCP HTTP server on 0.0.0.0:{port}")
+    uvicorn.run(create_app(), host="0.0.0.0", port=port)

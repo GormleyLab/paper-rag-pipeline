@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """
 Initial setup script for Paper RAG Pipeline.
-Processes all PDFs in the configured library directory and creates the vector database.
+Processes all PDFs in a specified directory and populates the PostgreSQL vector database.
+For AWS AgentCore deployment with PostgreSQL + pgvector.
 """
 
+import asyncio
 import os
 import sys
 from pathlib import Path
-import yaml
-import logging
 import warnings
 from dotenv import load_dotenv
 from rich.console import Console
@@ -24,109 +24,107 @@ sys.path.insert(0, str(project_root))
 from src.document_processor import DocumentProcessor
 from src.metadata_extractor import MetadataExtractor
 from src.embeddings import EmbeddingGenerator
-from src.vector_store import VectorStore
-from src.utils import setup_logger, find_pdf_files, compute_file_hash, save_bibtex_file, copy_pdf_to_database
+from src.pg_vector_store import PGVectorStore
+from src.services.s3_service import S3Service
+from src.core.settings import get_settings
+from src.core.database import init_db
+from src.utils import setup_logger, find_pdf_files, compute_file_hash
 
 
 console = Console()
 
 
-def load_configuration():
-    """Load configuration from config file and environment."""
-    console.print("[bold blue]Loading configuration...[/bold blue]")
+async def initialize_database():
+    """Initialize database and run migrations."""
+    console.print("[bold blue]Initializing database...[/bold blue]")
 
-    # Load environment variables
-    load_dotenv()
+    # Initialize database schema
+    await init_db()
 
-    # Load config file
-    config_path = Path('config/config.yaml')
-    if not config_path.exists():
-        console.print("[bold red]Error: config/config.yaml not found![/bold red]")
-        console.print("Please create the configuration file first.")
-        sys.exit(1)
+    # Run Alembic migrations
+    try:
+        import subprocess
+        result = subprocess.run(
+            ["alembic", "upgrade", "head"],
+            cwd=str(project_root),
+            capture_output=True,
+            text=True
+        )
+        if result.returncode != 0:
+            console.print(f"[yellow]Migration warning: {result.stderr}[/yellow]")
+        else:
+            console.print("[green]✓[/green] Database migrations applied")
+    except Exception as e:
+        console.print(f"[yellow]Could not run migrations automatically: {e}[/yellow]")
+        console.print("[yellow]Please run 'alembic upgrade head' manually[/yellow]")
 
-    with open(config_path, 'r') as f:
-        config = yaml.safe_load(f)
-
-    # Override with environment variables
-    config['openai_api_key'] = os.getenv('OPENAI_API_KEY', config.get('openai_api_key', ''))
-    config['crossref_email'] = os.getenv('CROSSREF_EMAIL', config.get('crossref_email', ''))
-
-    # Validate required fields
-    if not config.get('openai_api_key'):
-        console.print("[bold red]Error: OPENAI_API_KEY not found![/bold red]")
-        console.print("Set it in .env file or config.yaml")
-        sys.exit(1)
-
-    if not config.get('pdf_library_path'):
-        console.print("[bold red]Error: pdf_library_path not set in config.yaml![/bold red]")
-        sys.exit(1)
-
-    console.print("[green]✓[/green] Configuration loaded")
-    return config
+    console.print("[green]✓[/green] Database initialized")
 
 
-def initialize_components(config):
+def initialize_components():
     """Initialize all pipeline components."""
     console.print("[bold blue]Initializing components...[/bold blue]")
 
-    # Set up logging
-    log_dir = Path('data/logs')
-    log_dir.mkdir(parents=True, exist_ok=True)
-    logger = setup_logger('initial_setup', log_file=log_dir / 'initial_setup.log')
+    settings = get_settings()
+
+    # Set up logging (stdout only for cloud compatibility)
+    logger = setup_logger('initial_setup')
+
+    # Validate required settings
+    if not settings.openai_api_key:
+        console.print("[bold red]Error: OPENAI_API_KEY not found![/bold red]")
+        console.print("Set it in .env file or as environment variable")
+        sys.exit(1)
 
     # Initialize document processor
     doc_processor = DocumentProcessor(
-        max_chunk_tokens=config.get('max_chunk_tokens', 1000),
-        chunk_overlap=config.get('chunk_overlap', 150),
-        embedding_model=config.get('embedding_model', 'text-embedding-3-large')
+        max_chunk_tokens=settings.max_chunk_tokens,
+        chunk_overlap=settings.chunk_overlap,
+        embedding_model=settings.embedding_model
     )
     console.print("[green]✓[/green] Document processor initialized")
 
     # Initialize metadata extractor
     metadata_extractor = MetadataExtractor(
-        crossref_email=config.get('crossref_email')
+        crossref_email=settings.crossref_email
     )
     console.print("[green]✓[/green] Metadata extractor initialized")
 
     # Initialize embedding generator
     embedding_generator = EmbeddingGenerator(
-        api_key=config['openai_api_key'],
-        model=config.get('embedding_model', 'text-embedding-3-large'),
-        dimensions=config.get('vector_dimension', 3072),
-        batch_size=config.get('batch_size', 100)
+        api_key=settings.openai_api_key,
+        model=settings.embedding_model,
+        dimensions=settings.vector_dimension,
+        batch_size=settings.batch_size
     )
     console.print("[green]✓[/green] Embedding generator initialized")
 
-    # Initialize vector store
-    db_path = Path(config.get('lancedb_path', 'data/lancedb'))
-    vector_store = VectorStore(
-        db_path=db_path,
-        vector_dimension=config.get('vector_dimension', 3072)
+    # Initialize PostgreSQL vector store
+    vector_store = PGVectorStore(
+        vector_dimension=settings.vector_dimension
     )
-    vector_store.initialize_table()
-    console.print("[green]✓[/green] Vector store initialized")
+    console.print("[green]✓[/green] PostgreSQL vector store initialized")
 
-    return doc_processor, metadata_extractor, embedding_generator, vector_store, logger
+    # Initialize S3 service
+    s3_service = S3Service()
+    console.print("[green]✓[/green] S3 service initialized")
+
+    return doc_processor, metadata_extractor, embedding_generator, vector_store, s3_service, logger
 
 
-def process_pdf_library(config, doc_processor, metadata_extractor, embedding_generator, vector_store, logger):
+async def process_pdf_library(
+    pdf_library_path: Path,
+    doc_processor,
+    metadata_extractor,
+    embedding_generator,
+    vector_store,
+    s3_service,
+    logger
+):
     """Process all PDFs in the library."""
-    pdf_library_path = Path(config['pdf_library_path'])
-
     if not pdf_library_path.exists():
         console.print(f"[bold red]Error: PDF library path not found: {pdf_library_path}[/bold red]")
         sys.exit(1)
-
-    # Set up bibs directory
-    bibs_dir = Path(config.get('bibs_output_path', 'data/bibs'))
-    bibs_dir.mkdir(parents=True, exist_ok=True)
-    logger.info(f"BibTeX files will be saved to: {bibs_dir}")
-
-    # Set up pdfs directory
-    pdfs_dir = Path(config.get('pdfs_path', 'data/pdfs'))
-    pdfs_dir.mkdir(parents=True, exist_ok=True)
-    logger.info(f"PDF files will be copied to: {pdfs_dir}")
 
     # Find all PDFs
     console.print(f"\n[bold blue]Scanning for PDFs in: {pdf_library_path}[/bold blue]")
@@ -139,7 +137,7 @@ def process_pdf_library(config, doc_processor, metadata_extractor, embedding_gen
     console.print(f"[green]Found {len(pdf_files)} PDF files[/green]\n")
 
     # Get existing keys to avoid collisions
-    existing_keys = vector_store.get_all_bibtex_keys()
+    existing_keys = await vector_store.get_all_bibtex_keys()
 
     # Process each PDF
     processed = 0
@@ -163,7 +161,7 @@ def process_pdf_library(config, doc_processor, metadata_extractor, embedding_gen
             try:
                 # Check for duplicates
                 pdf_hash = compute_file_hash(pdf_path)
-                if vector_store.check_duplicate(pdf_hash):
+                if await vector_store.check_duplicate(pdf_hash):
                     logger.info(f"Skipping duplicate: {pdf_path.name}")
                     skipped += 1
                     progress.advance(task)
@@ -192,37 +190,27 @@ def process_pdf_library(config, doc_processor, metadata_extractor, embedding_gen
                 stats = embedding_generator.get_embedding_stats(embedding_results)
                 total_cost += stats['estimated_cost_usd']
 
-                # Copy PDF to database storage
+                # Upload PDF to S3
                 try:
-                    copied_pdf_path = copy_pdf_to_database(
-                        source_pdf=pdf_path,
-                        bibtex_key=metadata.bibtex_key,
-                        output_dir=pdfs_dir
+                    s3_key = await s3_service.upload_pdf_from_file(
+                        file_path=pdf_path,
+                        bibtex_key=metadata.bibtex_key
                     )
-                    logger.info(f"Copied PDF to database: {copied_pdf_path.name}")
+                    logger.info(f"Uploaded PDF to S3: {s3_key}")
                 except Exception as e:
-                    logger.warning(f"Failed to copy PDF for {pdf_path.name}: {e}")
-                    copied_pdf_path = pdf_path
+                    logger.error(f"Failed to upload PDF to S3 for {pdf_path.name}: {e}")
+                    failed += 1
+                    progress.advance(task)
+                    continue
 
-                # Add to vector store (use copied path)
-                vector_store.add_paper(
+                # Add to vector store
+                await vector_store.add_paper(
                     metadata=metadata,
                     chunks=chunks,
                     embeddings=embeddings,
-                    pdf_path=copied_pdf_path,
+                    s3_key=s3_key,
                     pdf_hash=pdf_hash
                 )
-
-                # Save individual BibTeX file
-                try:
-                    bib_file_path = save_bibtex_file(
-                        bibtex_entry=metadata.bibtex_entry,
-                        bibtex_key=metadata.bibtex_key,
-                        output_dir=bibs_dir
-                    )
-                    logger.info(f"Saved BibTeX file: {bib_file_path.name}")
-                except Exception as e:
-                    logger.warning(f"Failed to save BibTeX file for {pdf_path.name}: {e}")
 
                 processed += 1
                 logger.info(f"Successfully processed: {pdf_path.name} ({metadata.bibtex_key})")
@@ -244,38 +232,59 @@ def process_pdf_library(config, doc_processor, metadata_extractor, embedding_gen
     console.print(f"\n[bold]Total estimated cost:[/bold] ${total_cost:.4f}")
 
     # Show database stats
-    stats = vector_store.get_statistics()
+    stats = await vector_store.get_statistics()
     console.print(f"\n[bold]Database Statistics:[/bold]")
     console.print(f"  Total papers: {stats['total_papers']}")
     console.print(f"  Total chunks: {stats['total_chunks']}")
-    console.print(f"  Database path: {stats['database_path']}")
+    console.print(f"  Backend: {stats['database_type']}")
 
 
-def main():
+async def main():
     """Main setup function."""
     console.print("\n[bold cyan]═══════════════════════════════════════════════════════[/bold cyan]")
     console.print("[bold cyan]  Paper RAG Pipeline - Initial Setup[/bold cyan]")
+    console.print("[bold cyan]  AWS AgentCore (PostgreSQL + pgvector + S3)[/bold cyan]")
     console.print("[bold cyan]═══════════════════════════════════════════════════════[/bold cyan]\n")
 
-    # Load configuration
-    config = load_configuration()
+    # Load environment variables
+    load_dotenv()
+
+    # Get PDF library path from command line or prompt
+    if len(sys.argv) > 1:
+        pdf_library_path = Path(sys.argv[1])
+    else:
+        console.print("[bold]Enter the path to your PDF library:[/bold]")
+        pdf_path_str = input("> ").strip()
+        if not pdf_path_str:
+            console.print("[bold red]Error: No path provided![/bold red]")
+            sys.exit(1)
+        pdf_library_path = Path(pdf_path_str)
+
+    # Initialize database
+    await initialize_database()
 
     # Initialize components
-    doc_processor, metadata_extractor, embedding_generator, vector_store, logger = initialize_components(config)
+    doc_processor, metadata_extractor, embedding_generator, vector_store, s3_service, logger = initialize_components()
 
     try:
         # Process PDF library
-        process_pdf_library(config, doc_processor, metadata_extractor, embedding_generator, vector_store, logger)
+        await process_pdf_library(
+            pdf_library_path,
+            doc_processor,
+            metadata_extractor,
+            embedding_generator,
+            vector_store,
+            s3_service,
+            logger
+        )
 
-        console.print("\n[bold green]Setup complete! You can now use the MCP server with Claude Desktop.[/bold green]\n")
+        console.print("\n[bold green]Setup complete! The MCP server is ready to use.[/bold green]\n")
+        console.print("To start the server, run:")
+        console.print("  python src/mcp_http_server.py")
     finally:
-        # Explicit cleanup to prevent resource leaks
+        # Explicit cleanup
         logger.info("Cleaning up resources...")
-        del doc_processor
-        del metadata_extractor
-        del embedding_generator
-        del vector_store
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

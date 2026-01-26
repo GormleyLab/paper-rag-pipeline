@@ -1,13 +1,19 @@
 # Paper RAG Pipeline for Research & Citation Management
 
-A locally-hosted, privacy-focused RAG (Retrieval Augmented Generation) system designed to transform how researchers interact with their paper libraries during grant writing and academic writing. By combining advanced document processing (Docling), vector search (LanceDB), and AI assistance (Claude via MCP), this tool enables intelligent citation management, contextual paper retrieval, and automated bibliography generation for LaTeX documents.
+A RAG (Retrieval Augmented Generation) system designed for academic research paper management. Combines advanced document processing (Docling), vector search (PostgreSQL + pgvector), AWS S3 storage, and AI assistance via MCP (Model Context Protocol) to enable intelligent citation management, contextual paper retrieval, and automated bibliography generation.
+
+**Deployment Options:**
+- **AWS App Runner** (Recommended): Simple static API key authentication, ~$5-15/month
+- **AWS AgentCore**: SigV4/Cognito authentication for Bedrock integration
+
+**Production URL**: `https://m76rjhx9i3.us-east-1.awsapprunner.com` (requires API key)
 
 ## Features
 
 - **Intelligent Paper Search**: Semantic search through your PDF library using natural language queries
 - **Automated Citation Management**: Extract DOI metadata and generate BibTeX entries automatically
-- **Claude Desktop Integration**: Natural language interface via Model Context Protocol (MCP)
-- **Local & Private**: All processing happens locally, only embeddings API calls to OpenAI
+- **MCP Protocol Support**: Standard MCP over HTTP for integration with any MCP-compatible client
+- **Scalable Architecture**: PostgreSQL + pgvector for vector storage, S3 for PDF storage
 - **LaTeX Ready**: Generate publication-ready `.bib` files for your manuscripts
 - **URL Linking**: Maintain links to online versions (DOI, arXiv, PubMed) for easy access
 
@@ -16,9 +22,9 @@ A locally-hosted, privacy-focused RAG (Retrieval Augmented Generation) system de
 ### Prerequisites
 
 - Python 3.10+
-- Claude Desktop app
+- PostgreSQL with pgvector extension
+- AWS S3 bucket
 - OpenAI API key (for embeddings)
-- Local library of research papers (PDFs)
 
 ### Installation
 
@@ -36,59 +42,132 @@ A locally-hosted, privacy-focused RAG (Retrieval Augmented Generation) system de
 3. **Configure environment variables**
    ```bash
    cp .env.example .env
-   # Edit .env and add your OpenAI API key
+   # Edit .env with your configuration (see Environment Variables below)
    ```
 
-4. **Update configuration**
+4. **Run database migrations**
    ```bash
-   # Edit config/config.yaml with your PDF library path
+   alembic upgrade head
    ```
 
-5. **Initialize the database**
+5. **Initialize the database (optional - for batch import)**
    ```bash
-   python scripts/initial_setup.py
+   python scripts/initial_setup.py /path/to/your/pdfs
    ```
 
-6. **Configure Claude Desktop**
-   - Add the MCP server configuration to Claude Desktop
-   - Location (macOS): `~/Library/Application Support/Claude/claude_desktop_config.json`
-   - See [docs/setup.md](docs/setup.md) for detailed instructions
+6. **Start the MCP HTTP server**
+   ```bash
+   # For local development
+   python -m src.mcp_http_server
+
+   # For App Runner deployment (uses PORT env var, default 8080)
+   # Set PAPERRAG_API_KEY to enable authentication
+   PAPERRAG_API_KEY=your-key python -m src.mcp_http_server
+   ```
+
+## Environment Variables
+
+```bash
+# Required
+DATABASE_URL=postgresql+asyncpg://user:pass@host:5432/dbname
+OPENAI_API_KEY=sk-your-openai-key
+S3_BUCKET=paper-rag-pdfs
+AWS_REGION=us-east-1
+
+# For App Runner deployment
+PAPERRAG_API_KEY=your-api-key  # Enables Bearer token authentication
+
+# Optional
+CROSSREF_EMAIL=your.email@university.edu
+AWS_ACCESS_KEY_ID=...      # If not using IAM role
+AWS_SECRET_ACCESS_KEY=...  # If not using IAM role
+```
 
 ## Project Structure
 
 ```
 paper-rag-pipeline/
-├── src/                            # Source code
-│   ├── mcp_server.py              # MCP server implementation
-│   ├── document_processor.py      # Docling PDF processing pipeline
+├── src/
+│   ├── core/                      # Database & settings
+│   ├── models/                    # SQLAlchemy models
+│   ├── services/                  # S3 service
+│   ├── mcp_http_server.py         # MCP HTTP server (main entry)
+│   ├── pg_vector_store.py         # PostgreSQL vector operations
+│   ├── document_processor.py      # Docling PDF processing
 │   ├── metadata_extractor.py      # Citation metadata extraction
-│   ├── vector_store.py            # LanceDB operations
 │   ├── embeddings.py              # OpenAI embedding generation
 │   ├── bibliography.py            # BibTeX management
 │   └── utils.py                   # Helper functions
+├── alembic/                       # Database migrations
 ├── config/                        # Configuration files
-│   ├── config.yaml                # Main configuration
-│   └── claude_desktop_config.json # MCP server config (example)
-├── data/                          # Data directory
-│   ├── lancedb/                   # Vector database
-│   ├── pdfs/                      # PDF library
-│   └── logs/                      # Application logs
 ├── scripts/                       # Utility scripts
-│   ├── initial_setup.py           # Initialize database
-│   └── maintenance.py             # Database maintenance
-├── tests/                         # Test suite
 ├── docs/                          # Documentation
-├── .env.example                   # Environment variables template
-├── requirements.txt               # Python dependencies
-├── PRD.md                         # Product Requirements Document
-└── README.md                      # This file
+└── requirements.txt               # Python dependencies
+```
+
+## Connecting to Deployed Service
+
+### Python MCP Client
+
+```python
+import os
+
+mcp_servers = [
+    {
+        "type": "url",
+        "url": "https://m76rjhx9i3.us-east-1.awsapprunner.com/mcp",
+        "name": "paper-rag",
+        "authorization_token": os.environ.get("PAPERRAG_API_KEY"),
+    }
+]
+```
+
+### curl (testing)
+
+```bash
+# Set your API key (from AWS Secrets Manager or .env)
+export PAPERRAG_API_KEY="your-api-key"
+
+# Test database stats
+curl -X POST https://m76rjhx9i3.us-east-1.awsapprunner.com/mcp \
+    -H "Content-Type: application/json" \
+    -H "Authorization: Bearer $PAPERRAG_API_KEY" \
+    -H "Accept: application/json, text/event-stream" \
+    -d '{"jsonrpc":"2.0","method":"tools/call","params":{"name":"database_stats","arguments":{}},"id":1}'
+```
+
+### Get API Key
+
+```bash
+aws secretsmanager get-secret-value \
+    --secret-id paperrag/api-key \
+    --query SecretString --output text \
+    --region us-east-1
 ```
 
 ## Usage
 
-### via Claude Desktop
+### MCP Tools Available
 
-Once configured, interact with your paper library through Claude Desktop:
+The server exposes 10 MCP tools:
+
+**Core Tools:**
+- `search_papers` - Semantic search with filters (section, year)
+- `add_paper_from_file` - Add PDF from local file path
+- `generate_bibliography` - Create .bib file from paper keys
+- `get_paper_details` - Retrieve paper metadata
+- `database_stats` - Database statistics
+- `list_recent_papers` - Show recent additions
+- `delete_paper` - Remove paper from database
+
+**Upload Tools:**
+- `add_paper_from_upload` - Add paper from base64-encoded PDF
+- `add_papers_from_folder_upload` - Batch upload multiple PDFs
+
+**PDF Retrieval:**
+- `get_paper_pdf` - Download PDF as base64
+
+### Example Queries
 
 **Search for papers:**
 ```
@@ -97,8 +176,7 @@ Find papers about machine learning in drug delivery from the last 3 years
 
 **Add a paper:**
 ```
-[Drag PDF into chat]
-Add this paper to my database
+Add this paper to my database [with base64 PDF data]
 ```
 
 **Generate bibliography:**
@@ -111,79 +189,55 @@ Generate a .bib file with Smith2024, Jones2023, Chen2022
 Show me information about the Wang2024 paper
 ```
 
-### Available MCP Tools
-
-- `search_papers` - Search the paper database
-- `add_paper_from_file` - Add PDF via file path
-- `add_paper_from_url` - Add paper via DOI/arXiv/URL
-- `generate_bibliography` - Create .bib file
-- `get_paper_details` - Retrieve paper metadata
-- `verify_citation` - Review citation accuracy
-- `update_bibtex` - Manually update metadata
-- `import_bibtex_file` - Import existing .bib file
-- `database_stats` - Get database statistics
-- `list_recent_papers` - Show recently added papers
-
 ## Technology Stack
 
 | Component | Technology | Purpose |
 |-----------|-----------|---------|
 | Document Processing | Docling | Advanced PDF parsing with structure preservation |
-| Vector Database | LanceDB | High-performance local vector storage |
+| Vector Database | PostgreSQL + pgvector | Scalable vector storage with HNSW indexing |
+| PDF Storage | AWS S3 | Scalable object storage |
 | Embeddings | OpenAI text-embedding-3-large | Semantic search (3072 dimensions) |
 | Chunking | Docling Hybrid Chunker | Semantic document chunking |
-| AI Interface | Claude Desktop + MCP | Natural language interaction |
+| AI Interface | MCP over HTTP | Standard protocol for tool access |
 | Citation Metadata | CrossRef API | Authoritative bibliographic data |
 | Bibliography Format | BibTeX | LaTeX-compatible citations |
 
 ## Development Roadmap
 
-### Phase 1: MVP (v1.0) - Current
-- Core PDF processing pipeline
-- Metadata extraction (DOI, CrossRef)
-- Vector search with LanceDB
-- Basic MCP tools
-- Claude Desktop integration
+### Current (v2.1 - App Runner)
+- PostgreSQL + pgvector vector storage
+- AWS S3 PDF storage
+- MCP HTTP server with API key authentication
+- 10 MCP tools
+- Async operations throughout
+- AWS App Runner deployment (recommended)
+- AWS AgentCore deployment (alternative)
 
-### Phase 2: Enhanced Features (v1.5)
+### Phase 2: Enhanced Features
 - URL-based paper addition
 - Citation verification tools
 - Manual metadata overrides
 - BibTeX file import
 
-### Phase 3: Citation Graph (v2.0)
+### Phase 3: Citation Graph
 - Reference extraction
 - Citation network analysis
 - Foundational paper discovery
-- Co-citation analysis
-
-### Phase 4: Advanced Retrieval (v2.5)
-- Section-aware retrieval
-- Figure/table extraction
-- Claim verification
 
 ## Documentation
 
 - [Setup Guide](docs/setup.md) - Detailed installation instructions
-- [Usage Guide](docs/usage.md) - Comprehensive usage examples
-- [Troubleshooting](docs/troubleshooting.md) - Common issues and solutions
-- [PRD](PRD.md) - Complete product requirements
-
-## Privacy & Security
-
-- All PDFs stored locally (no cloud upload)
-- Vector database stored locally
-- Only API calls: OpenAI embeddings, CrossRef metadata
-- No paper content sent to external services
-- API keys stored securely in environment variables
+- [Quick Start](QUICK_START.md) - Get running quickly
+- [Troubleshooting](TROUBLESHOOTING.md) - Common issues and solutions
+- [CLAUDE.md](CLAUDE.md) - Developer documentation
 
 ## Cost Estimates
 
-**Operational Costs (per month):**
-- Initial library (1000 papers): ~$15 one-time
+**Operational Costs:**
+- Initial library (1000 papers): ~$15 one-time (embeddings)
 - Ongoing queries: ~$5-10/month typical usage
 - Adding papers: ~$0.01-0.02 per paper
-- Total first year: ~$175-250 (API usage only)
+- S3 storage: ~$0.023/GB/month
 
 ## Contributing
 
@@ -199,6 +253,5 @@ Built for the Gormley Lab at Rutgers University for streamlining grant writing a
 
 ---
 
-**Version:** 1.0
-**Status:** In Development
-**Author:** Adam (Associate Professor, Biomedical Engineering, Rutgers University)
+**Version:** 2.1 (App Runner + API Key Auth)
+**Status:** Production Ready

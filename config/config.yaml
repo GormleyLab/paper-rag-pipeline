@@ -1,15 +1,17 @@
 # Paper RAG Pipeline Configuration
+# AWS AgentCore Deployment
 
-# PDF Library
-pdf_library_path: "./pdfs"  # CHANGE THIS to your PDF directory
+# Database (PostgreSQL + pgvector)
+# Set DATABASE_URL environment variable for production
+database_url: "postgresql+asyncpg://localhost:5432/paper_rag"
 
-# Database
-lancedb_path: "./data/lancedb"
+# AWS S3 for PDF storage
+# Set via environment variables: S3_BUCKET, AWS_REGION
+s3_bucket: "paper-rag-pdfs"
+aws_region: "us-east-1"
+
+# Vector configuration
 vector_dimension: 3072
-
-# Storage paths
-pdfs_path: "./data/pdfs"  # Database copies of PDFs (named by citation key)
-bibs_output_path: "./data/bibs"  # Individual BibTeX files (named by citation key)
 
 # Embeddings
 embedding_model: "text-embedding-3-large"
@@ -27,6 +29,7 @@ crossref_email: ""  # Set via CROSSREF_EMAIL environment variable (optional but 
 
 # MCP Server
 server_name: "paper-rag"
+server_port: 8000
 log_level: "INFO"
 
 # Bibliography

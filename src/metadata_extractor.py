@@ -4,6 +4,7 @@ Metadata extraction module for citation information from PDFs and APIs.
 
 import logging
 import time
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from pathlib import Path
 from typing import Optional
 from dataclasses import dataclass
@@ -13,12 +14,10 @@ import requests
 import fitz  # PyMuPDF
 from pybtex.database import parse_string as parse_bibtex
 
-try:
-    import pdf2bib
-
-    PDF2BIB_AVAILABLE = True
-except ImportError:
-    PDF2BIB_AVAILABLE = False
+# pdf2bib is imported lazily to avoid PermissionError in containers
+# where it tries to write settings.ini on import
+PDF2BIB_AVAILABLE = None  # Will be set on first use
+_pdf2bib_module = None
 
 from src.utils import (
     setup_logger,
@@ -30,6 +29,44 @@ from src.utils import (
 
 
 logger = setup_logger(__name__)
+
+
+def _get_pdf2bib():
+    """
+    Lazily import pdf2bib module.
+
+    pdf2bib tries to write a settings.ini file on import, which fails
+    in containerized environments running as non-root. This function
+    handles that gracefully.
+
+    Returns:
+        tuple: (module, is_available) - the pdf2bib module and availability flag
+    """
+    global PDF2BIB_AVAILABLE, _pdf2bib_module
+
+    if PDF2BIB_AVAILABLE is not None:
+        return _pdf2bib_module, PDF2BIB_AVAILABLE
+
+    try:
+        import pdf2bib as _pdf2bib
+        _pdf2bib_module = _pdf2bib
+        PDF2BIB_AVAILABLE = True
+        logger.info("pdf2bib module loaded successfully")
+    except ImportError:
+        _pdf2bib_module = None
+        PDF2BIB_AVAILABLE = False
+        logger.warning("pdf2bib not available - install with 'pip install pdf2bib'")
+    except PermissionError as e:
+        # pdf2bib tries to write settings.ini on import, which fails in containers
+        _pdf2bib_module = None
+        PDF2BIB_AVAILABLE = False
+        logger.warning(f"pdf2bib unavailable due to permission error (container environment): {e}")
+    except Exception as e:
+        _pdf2bib_module = None
+        PDF2BIB_AVAILABLE = False
+        logger.warning(f"pdf2bib unavailable due to error: {e}")
+
+    return _pdf2bib_module, PDF2BIB_AVAILABLE
 
 
 class ExtractionMethod(Enum):
@@ -73,6 +110,7 @@ class MetadataExtractor:
         crossref_email: Optional[str] = None,
         max_retries: int = 3,
         retry_delay: float = 1.0,
+        pdf2bib_timeout: int = 60,
     ):
         """
         Initialize the metadata extractor.
@@ -81,10 +119,12 @@ class MetadataExtractor:
             crossref_email: Email for polite CrossRef API usage
             max_retries: Maximum number of API retry attempts
             retry_delay: Delay between retries in seconds
+            pdf2bib_timeout: Timeout in seconds for pdf2bib extraction (default: 60)
         """
         self.crossref_email = crossref_email
         self.max_retries = max_retries
         self.retry_delay = retry_delay
+        self.pdf2bib_timeout = pdf2bib_timeout
 
         self.session = requests.Session()
         if crossref_email:
@@ -92,12 +132,15 @@ class MetadataExtractor:
                 {"User-Agent": f"PaperRAG/1.0 (mailto:{crossref_email})"}
             )
 
-        # Configure pdf2bib if available
-        if PDF2BIB_AVAILABLE:
-            pdf2bib.config.set("verbose", False)  # Set to True for debugging
-            logger.info("MetadataExtractor initialized with pdf2bib support")
+        # Configure pdf2bib if available (lazy import)
+        pdf2bib_mod, is_available = _get_pdf2bib()
+        if is_available and pdf2bib_mod:
+            try:
+                pdf2bib_mod.config.set("verbose", False)  # Set to True for debugging
+                logger.info("MetadataExtractor initialized with pdf2bib support")
+            except Exception as e:
+                logger.warning(f"Could not configure pdf2bib: {e}")
         else:
-            logger.warning("pdf2bib not available - install with 'pip install pdf2bib'")
             logger.info("MetadataExtractor initialized without pdf2bib support")
 
     def extract_metadata(
@@ -126,7 +169,8 @@ class MetadataExtractor:
         logger.info(f"Extracting metadata from: {pdf_path.name}")
 
         # Strategy 1: Try pdf2bib (extracts DOI/arXiv directly from PDF and fetches metadata)
-        if PDF2BIB_AVAILABLE:
+        _, pdf2bib_available = _get_pdf2bib()
+        if pdf2bib_available:
             metadata = self._get_metadata_from_pdf2bib(pdf_path, existing_keys)
             if metadata:
                 return metadata
@@ -190,8 +234,22 @@ class MetadataExtractor:
         try:
             logger.info(f"Attempting pdf2bib extraction for: {pdf_path.name}")
 
-            # Call pdf2bib to extract identifier and fetch metadata
-            result = pdf2bib.pdf2bib(str(pdf_path))
+            # Get pdf2bib module via lazy import
+            pdf2bib_mod, is_available = _get_pdf2bib()
+            if not is_available or not pdf2bib_mod:
+                logger.warning("pdf2bib not available for extraction")
+                return None
+
+            # Call pdf2bib with timeout to prevent hanging on problematic PDFs
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(pdf2bib_mod.pdf2bib, str(pdf_path))
+                try:
+                    result = future.result(timeout=self.pdf2bib_timeout)
+                except FuturesTimeoutError:
+                    logger.warning(
+                        f"pdf2bib timed out after {self.pdf2bib_timeout}s for {pdf_path.name}"
+                    )
+                    return None
 
             # Handle result format (can be dict with file path as key or direct result)
             if isinstance(result, dict):
