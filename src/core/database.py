@@ -32,6 +32,10 @@ def get_engine():
             settings.database_url,
             echo=settings.log_level == "DEBUG",
             poolclass=NullPool,  # Better for serverless/async contexts
+            # ssl=require prevents asyncpg's sslmode=prefer plaintext fallback,
+            # which masks auth failures as "no pg_hba.conf entry ... no encryption"
+            # against RDS (rds.force_ssl=1).
+            connect_args={"ssl": "require"},
         )
         logger.info(f"Database engine created for {settings.database_url.split('@')[-1]}")
 
