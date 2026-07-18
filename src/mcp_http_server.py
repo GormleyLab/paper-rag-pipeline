@@ -125,7 +125,10 @@ async def initialize_components():
 # Create FastMCP server with stateless HTTP
 # host="0.0.0.0" is required for container deployments (AgentCore, Docker, etc.)
 # Default port (8000) is used - matches Dockerfile EXPOSE and AWS AgentCore default
-mcp = FastMCP("paper-rag", stateless_http=True, host="0.0.0.0")
+# json_response=True: POST responses are plain JSON instead of SSE streams. In
+# stateless mode there are no server-initiated messages, so SSE adds nothing and
+# dangling streams stall clients (e.g. Anthropic's MCP connector).
+mcp = FastMCP("paper-rag", stateless_http=True, host="0.0.0.0", json_response=True)
 
 
 @mcp.tool()
@@ -950,6 +953,29 @@ def create_app():
     """
     # Get the underlying Starlette app from FastMCP
     starlette_app = mcp.streamable_http_app()
+
+    # Reject GET on the MCP endpoint. The SDK's stateless mode still opens the
+    # standalone server->client SSE stream on GET, but a per-request stateless
+    # server never sends anything on it, so the connection dangles forever and
+    # stalls clients that open it (DELETE already gets 405 from the SDK).
+    async def mcp_get_not_allowed(_request):
+        return JSONResponse(
+            {
+                "jsonrpc": "2.0",
+                "error": {
+                    "code": -32000,
+                    "message": "Method Not Allowed: server does not offer a standalone SSE stream in stateless mode",
+                },
+                "id": None,
+            },
+            status_code=405,
+            headers={"Allow": "POST"},
+        )
+
+    starlette_app.routes.insert(
+        0,
+        Route(mcp.settings.streamable_http_path, mcp_get_not_allowed, methods=["GET"]),
+    )
 
     # Add health check endpoints
     async def health(_request):
