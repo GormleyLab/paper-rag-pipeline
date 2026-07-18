@@ -364,6 +364,30 @@ resource_tracker: There appear to be 1 leaked semaphore objects to clean up at s
 2. Try a broader query without filters
 3. Verify papers were indexed successfully
 
+### "no pg_hba.conf entry ... no encryption" from DB-backed tools
+
+**Issue**: `search_papers`, `database_stats`, etc. fail with:
+```
+no pg_hba.conf entry for host "10.0.x.x", user "...", database "paper_rag", no encryption
+```
+
+**Cause**: This error is usually a red herring. asyncpg defaults to `sslmode=prefer`: it first
+attempts an SSL connection, and if that attempt fails with an authorization error (including a
+wrong password), it silently retries **without SSL**. RDS enforces `rds.force_ssl=1`, so the
+plaintext retry is rejected with the "no encryption" error above — masking the real failure.
+Check the RDS server log for the paired error:
+```bash
+aws rds download-db-log-file-portion --db-instance-identifier geppetto-production-db \
+  --log-file-name error/postgresql.log.$(date -u +%Y-%m-%d-%H) --starting-token 0 --output text
+```
+A preceding `password authentication failed for user ...` line means the `paperrag/database-url`
+secret is stale (e.g., the DB master password was rotated but only
+`geppetto-production/database-url` was updated). Update the secret and run
+`aws apprunner start-deployment` — App Runner only resolves secrets at instance launch.
+
+The engine now pins `connect_args={"ssl": "require"}` (`src/core/database.py`) so the plaintext
+fallback cannot mask the underlying error again.
+
 ### Duplicate Paper Detection
 
 **Issue**: Paper not being added (silently skipped)
