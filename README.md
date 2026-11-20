@@ -229,7 +229,7 @@ Show me information about the Wang2024 paper
 - [Setup Guide](docs/setup.md) - Detailed installation instructions
 - [Quick Start](QUICK_START.md) - Get running quickly
 - [Troubleshooting](TROUBLESHOOTING.md) - Common issues and solutions
-- [CLAUDE.md](CLAUDE.md) - Developer documentation
+- [AGENTS.md](AGENTS.md) - Developer and coding-agent instructions (`CLAUDE.md` only imports it). Check the agent configuration with `python -m unittest discover -s scripts -p test_sync_agent_config.py` and `python scripts/sync_agent_config.py --check`
 
 ## Cost Estimates
 
